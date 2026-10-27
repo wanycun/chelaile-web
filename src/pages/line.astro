@@ -1,0 +1,126 @@
+---
+import Base from "../layouts/Base.astro";
+
+const params = Astro.url.searchParams;
+const lineId = params.get("lineId") || "";
+const dir = params.get("dir") || "1";
+const cityId = params.get("cityId") || "040";
+const stationId = params.get("stationId") || "";
+const lineNo = params.get("n") || "线路";
+---
+
+<Base title={`${lineNo} 路 · 车来了`}>
+  <main class="wrap">
+    <header class="top">
+      <div style="min-width:0">
+        <a class="back" href="/">← 附近站点</a>
+        <div class="city"><span class="badge inline" id="no">{lineNo}</span> <span id="dir-txt">开往 —</span></div>
+        <div class="city-sub" id="status">加载中…</div>
+      </div>
+      <button class="fav big" id="fav-line" type="button" aria-label="收藏线路">☆</button>
+    </header>
+
+    <section class="line-meta" id="meta"></section>
+
+    <div class="list" id="route">
+      <div class="skeleton"></div>
+      <div class="skeleton"></div>
+    </div>
+    <p class="msg" id="msg"></p>
+  </main>
+
+  <script>
+    import { esc, hhmm, getJSON } from "../scripts/util.js";
+    import { isFavLine, toggleLine } from "../scripts/favs.js";
+
+    const qp = new URLSearchParams(location.search);
+    const lineId = qp.get("lineId") || "";
+    const dir = qp.get("dir") || "1";
+    const cityId = qp.get("cityId") || "040";
+    const stationId = qp.get("stationId") || "";
+    const lineNo = qp.get("n") || "";
+
+    const els = {
+      no: document.getElementById("no"),
+      dirTxt: document.getElementById("dir-txt"),
+      status: document.getElementById("status"),
+      meta: document.getElementById("meta"),
+      route: document.getElementById("route"),
+      msg: document.getElementById("msg"),
+      fav: document.getElementById("fav-line"),
+    };
+
+    let line = null;
+    const favId = () => `${lineId}#${dir}`;
+
+    function paintFav() {
+      const on = isFavLine(favId());
+      els.fav.textContent = on ? "★" : "☆";
+      els.fav.classList.toggle("on", on);
+    }
+
+    function render(data) {
+      line = data.line;
+      els.no.textContent = line.no || lineNo;
+      els.dirTxt.textContent = `开往 ${line.to || "—"}`;
+      els.status.textContent = `更新于 ${hhmm(data.updatedAt)} · 每 20 秒刷新`;
+      paintFav();
+
+      const busOrders = new Set(data.buses.map((b) => b.order));
+      const meta = [];
+      if (line.first && line.last) meta.push(`首末班 ${line.first}–${line.last}`);
+      if (line.price) meta.push(line.price);
+      if (line.count) meta.push(`共 ${line.count} 站`);
+      meta.push(`当前 ${data.buses.length} 辆车`);
+      els.meta.innerHTML = meta.map((m) => `<span>${esc(m)}</span>`).join("");
+
+      els.route.innerHTML = data.stations
+        .map((s, i) => {
+          const hasBus = busOrders.has(s.order);
+          const first = i === 0;
+          const last = i === data.stations.length - 1;
+          return `
+            <div class="stop${hasBus ? " has-bus" : ""}">
+              <span class="stop-dot${first || last ? " end" : ""}"></span>
+              <span class="stop-name">${esc(s.name)}${s.metropolitan ? '<span class="sub">地铁</span>' : ""}</span>
+              ${hasBus ? '<span class="bus">🚌</span>' : ""}
+            </div>`;
+        })
+        .join("");
+
+      els.msg.textContent = data.buses.length ? "" : "暂时没有车辆在线（可能未发车或已过运营时段）";
+      els.msg.className = "msg";
+    }
+
+    async function load() {
+      try {
+        const q = new URLSearchParams({ lineId, dir, cityId, stationId });
+        render(await getJSON(`/api/line?${q}`));
+      } catch (err) {
+        els.msg.textContent = `加载失败：${err.message}`;
+        els.msg.className = "msg err";
+      }
+    }
+
+    els.fav.addEventListener("click", () => {
+      if (!line) return;
+      toggleLine({
+        id: favId(),
+        name: line.no,
+        to: line.to,
+        dir: Number(line.dir ?? dir),
+        cityId,
+        stationId,
+      });
+      paintFav();
+    });
+
+    load();
+    setInterval(() => {
+      if (document.visibilityState === "visible") load();
+    }, 20_000);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") load();
+    });
+  </script>
+</Base>

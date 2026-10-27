@@ -1,4 +1,4 @@
----
+﻿---
 import Base from "../layouts/Base.astro";
 ---
 
@@ -14,6 +14,11 @@ import Base from "../layouts/Base.astro";
       </button>
     </header>
 
+    <section class="favs" id="favs" hidden>
+      <div class="favs-title">收藏</div>
+      <div class="favs-row" id="favs-row"></div>
+    </section>
+
     <div class="list" id="list">
       <div class="skeleton"></div>
       <div class="skeleton"></div>
@@ -24,11 +29,14 @@ import Base from "../layouts/Base.astro";
 
     <p class="foot">
       数据来自车来了 H5 接口 · 每 30 秒自动刷新<br />
-      仅供个人查看，不做批量采集
+      点站点名看该站全部线路，点线路看沿途站点 · 收藏只存在本机
     </p>
   </main>
 
   <script>
+    import { esc, hhmm, fmtDist, lineRow, stationHref, getJSON } from "../scripts/util.js";
+    import { getFavs, isFavStation, toggleStation, toggleLine, onFavChange } from "../scripts/favs.js";
+
     const els = {
       list: document.getElementById("list"),
       msg: document.getElementById("msg"),
@@ -36,88 +44,109 @@ import Base from "../layouts/Base.astro";
       city: document.getElementById("city"),
       refresh: document.getElementById("refresh"),
       icon: document.getElementById("refresh-icon"),
+      favs: document.getElementById("favs"),
+      favsRow: document.getElementById("favs-row"),
     };
 
-    // 定位失败时的兜底坐标（广州 · 体育西路）
     const FALLBACK = { lat: 23.142166, lng: 113.316086, label: "体育西路（默认位置）" };
+    const CITY = "040";
 
-    let state = { cityId: "040", lat: null, lng: null, busy: false, timer: null };
+    let state = { lat: null, lng: null, busy: false };
     let lastUpdated = 0;
 
-    const esc = (s) =>
-      String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-
-    function fmtEta(sec) {
-      if (typeof sec !== "number" || sec < 0) return { text: "—", cls: "none", unit: "" };
-      if (sec < 60) return { text: "即将", cls: "soon", unit: "到站" };
-      const m = Math.round(sec / 60);
-      return { text: String(m), cls: m <= 2 ? "soon" : "", unit: "分钟" };
+    function renderFavs() {
+      const favs = getFavs();
+      const items = [
+        ...favs.stations.map((s) => {
+          const q = new URLSearchParams({
+            physicalStId: s.physicalStId || "",
+            sId: s.sId || s.id,
+            namesakeStId: s.namesakeStId || "",
+            firstLineId: s.firstLineId || "",
+            cityId: s.cityId || CITY,
+            n: s.name,
+          });
+          return `<a class="chip fav-station" href="/station/?${q}">🚏 ${esc(s.name)}</a>`;
+        }),
+        ...favs.lines.map((l) => {
+          const q = new URLSearchParams({
+            lineId: String(l.id || "").split("#")[0],
+            dir: String(l.dir ?? 1),
+            cityId: l.cityId || CITY,
+            stationId: l.stationId || "",
+            n: l.name,
+          });
+          return `<a class="chip fav-line" href="/line/?${q}">🚌 ${esc(l.name)} → ${esc(l.to || "")}</a>`;
+        }),
+      ];
+      els.favs.hidden = items.length === 0;
+      els.favsRow.innerHTML = items.join("");
     }
 
-    function fmtDist(m) {
-      if (typeof m !== "number" || m < 0) return "";
-      return m < 1000 ? `${m}m` : `${(m / 1000).toFixed(1)}km`;
-    }
-
-    function renderStation(st) {
+    function stationCard(st) {
       const lines = st.lines
-        .map((l) => {
-          const first = l.buses[0];
-          const second = l.buses[1];
-          const eta = fmtEta(first?.eta);
-          const meta = [];
-          if (first && first.left > 0) meta.push(`还有 ${first.left} 站`);
-          else if (first && first.dist > 0) meta.push(fmtDist(first.dist));
-          if (l.first && l.last) meta.push(`${l.first}–${l.last}`);
-          const tags = l.tags.length ? `<span class="tag">${esc(l.tags[0])}</span>` : "";
-          // 未发车：上游给的是预计发车时刻，比一个「—」有用
-          const noBus = !first && l.pre;
-          const main = noBus
-            ? `<span class="num none">${esc(l.pre)}</span><span class="unit">发车</span>`
-            : `<span class="num ${eta.cls}">${eta.text}</span>${eta.unit ? `<span class="unit">${eta.unit}</span>` : ""}`;
-          return `
-            <div class="line">
-              <span class="badge${l.subway ? " metro" : ""}">${esc(l.no)}</span>
-              <div class="dir">
-                <div class="to">开往 ${esc(l.to || "—")}${tags}</div>
-                <div class="meta">${esc(meta.join(" · "))}</div>
-              </div>
-              <div class="eta">
-                <div>${main}</div>
-                ${second && second.eta >= 0 ? `<div class="second">下一辆 ${Math.round(second.eta / 60)} 分</div>` : ""}
-              </div>
-            </div>`;
-        })
+        .map((l) => lineRow(l, { station: st, cityId: CITY, favId: `${l.lineId}#${l.dir}` }))
         .join("");
-
       return `
         <section class="station">
           <div class="st-head">
-            <div class="st-name">${esc(st.name)}${st.subway ? '<span class="sub">地铁</span>' : ""}</div>
-            <div class="st-dist">${st.distance >= 0 ? fmtDist(st.distance) : ""}</div>
+            <a class="st-name" href="${stationHref(st, CITY)}">${esc(st.name)}${st.subway ? '<span class="sub">地铁</span>' : ""}</a>
+            <div class="st-right">
+              <span class="st-dist">${st.distance >= 0 ? fmtDist(st.distance) : ""}</span>
+              <button class="fav${isFavStation(st.sId) ? " on" : ""}" type="button"
+                data-fav-station="${esc(st.sId)}" data-st-name="${esc(st.name)}"
+                data-st-physical="${esc(st.physicalStId)}" data-st-namesake="${esc(st.namesakeStId)}"
+                data-st-first-line="${esc(st.firstLineId)}" aria-label="收藏站点">${isFavStation(st.sId) ? "★" : "☆"}</button>
+            </div>
           </div>
           ${lines}
         </section>`;
     }
 
-    function setMsg(text, isErr = false) {
-      els.msg.textContent = text || "";
-      els.msg.className = "msg" + (isErr ? " err" : "");
+    function render(data) {
+      els.city.textContent = data.city || "附近站点";
+      els.status.textContent = `更新于 ${hhmm(data.updatedAt)} · 每 30 秒自动刷新`;
+      els.list.innerHTML = data.stations.map(stationCard).join("");
+      els.msg.textContent = "";
+      bindButtons();
     }
 
-    function render(data) {
-      if (!data.stations?.length) {
-        els.list.innerHTML = "";
-        setMsg("附近没有查到线路，换个位置试试。");
-        return;
-      }
-      els.city.textContent = data.city || "附近站点";
-      els.list.innerHTML = data.stations.map(renderStation).join("");
-      const t = new Date(data.updatedAt || Date.now());
-      const hh = String(t.getHours()).padStart(2, "0");
-      const mm = String(t.getMinutes()).padStart(2, "0");
-      els.status.textContent = `更新于 ${hh}:${mm} · 每 30 秒自动刷新`;
-      setMsg("");
+    function bindButtons() {
+      els.list.querySelectorAll("[data-fav-station]").forEach((btn) => {
+        btn.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const data = toggleStation({
+            id: btn.dataset.favStation,
+            name: btn.dataset.stName,
+            sId: btn.dataset.favStation,
+            physicalStId: btn.dataset.stPhysical,
+            namesakeStId: btn.dataset.stNamesake,
+            firstLineId: btn.dataset.stFirstLine,
+            cityId: CITY,
+          });
+          const on = data.stations.some((s) => s.id === btn.dataset.favStation);
+          btn.textContent = on ? "★" : "☆";
+          btn.classList.toggle("on", on);
+        });
+      });
+      els.list.querySelectorAll("[data-fav-line]").forEach((btn) => {
+        btn.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const data = toggleLine({
+            id: btn.dataset.favLine,
+            name: btn.dataset.lineName,
+            to: btn.dataset.lineTo,
+            dir: Number(btn.dataset.lineDir || 0),
+            cityId: btn.dataset.lineCity || CITY,
+            stationId: btn.dataset.lineStation || "",
+          });
+          const on = data.lines.some((l) => l.id === btn.dataset.favLine);
+          btn.textContent = on ? "★" : "☆";
+          btn.classList.toggle("on", on);
+        });
+      });
     }
 
     async function load({ silent = false } = {}) {
@@ -131,21 +160,20 @@ import Base from "../layouts/Base.astro";
         const q = new URLSearchParams({
           lat: String(state.lat),
           lng: String(state.lng),
-          cityId: state.cityId,
+          cityId: CITY,
           limit: "8",
         });
-        const res = await fetch(`/api/nearby?${q}`, { headers: { Accept: "application/json" } });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || data.error || `HTTP ${res.status}`);
-        if (data.empty) {
+        const data = await getJSON(`/api/nearby?${q}`);
+        if (data.empty || !data.stations?.length) {
           els.list.innerHTML = "";
-          setMsg(data.message || "附近没有查到线路。");
+          els.msg.textContent = data.message || "附近没有查到线路，换个位置试试。";
         } else {
           render(data);
         }
         lastUpdated = Date.now();
       } catch (err) {
-        setMsg(`查询失败：${err.message}`, true);
+        els.msg.textContent = `查询失败：${err.message}`;
+        els.msg.className = "msg err";
       } finally {
         state.busy = false;
         els.refresh.disabled = false;
@@ -179,12 +207,17 @@ import Base from "../layouts/Base.astro";
     }
 
     els.refresh.addEventListener("click", () => load());
+    onFavChange(renderFavs);
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible" && Date.now() - lastUpdated > 20_000) load({ silent: true });
+      if (document.visibilityState === "visible") {
+        renderFavs();
+        if (Date.now() - lastUpdated > 20_000) load({ silent: true });
+      }
     });
 
+    renderFavs();
     locate();
-    state.timer = setInterval(() => {
+    setInterval(() => {
       if (document.visibilityState === "visible") load({ silent: true });
     }, 30_000);
   </script>

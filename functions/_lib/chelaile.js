@@ -1,5 +1,5 @@
 // 车来了上游客户端：签名 → 请求 → 解密 → 精简成前端可用的结构。
-// 只做只读、低频的「附近站点」查询。
+// 只做只读、低频的查询（附近站点 / 单站点 / 单线路）。
 import { md5 } from "./md5.js";
 import { aesEcbDecrypt } from "./aes-ecb.js";
 
@@ -49,14 +49,14 @@ async function request(path, params) {
   const res = await fetch(url, { headers: HEADERS });
   if (!res.ok) throw new Error(`上游 HTTP ${res.status}`);
   const data = parseEnvelope(await res.text());
-  if (data.encryptResult) return JSON.parse(await aesEcbDecrypt(data.encryptResult));
+  if (data.encryptResult) return JSON.parse(aesEcbDecrypt(data.encryptResult));
   return data;
 }
 
 /** 把 stnStates 压成最多两条到站信息 */
 function pickBuses(line) {
   const states = Array.isArray(line?.stnStates) ? line.stnStates : [];
-  const buses = states
+  return states
     .map((s) => ({
       eta: typeof s.travelTime === "number" ? s.travelTime : -1,
       dist: typeof s.distanceToDest === "number" ? s.distanceToDest : -1,
@@ -66,7 +66,6 @@ function pickBuses(line) {
     .filter((b) => b.eta >= 0 || b.dist > 0)
     .sort((a, b) => (a.eta < 0 ? 1e9 : a.eta) - (b.eta < 0 ? 1e9 : b.eta))
     .slice(0, 2);
-  return buses;
 }
 
 function pickTags(line) {
@@ -75,39 +74,60 @@ function pickTags(line) {
   return list.map((t) => t?.title).filter(Boolean).slice(0, 2);
 }
 
+/** 一条线路 → 前端结构（附近站点、站点详情共用） */
+function shapeLine(l, station) {
+  const ln = l.line || {};
+  return {
+    no: String(ln.name || ln.lineNo || "").replace(/^0+/, "") || String(ln.lineNo || ""),
+    lineId: ln.lineId || "",
+    dir: ln.direction ?? 0,
+    to: ln.destinationName || ln.endSn || "",
+    from: ln.startSn || "",
+    first: ln.firstTime || "",
+    last: ln.lastTime || "",
+    price: ln.price || "",
+    hasBus: !!ln.hasBusInfo,
+    subway: !!(ln.isSubway || station?.isSubway),
+    buses: pickBuses(l),
+    pre: l.preArrivalTime || "",
+    tags: pickTags(l),
+  };
+}
+
+/** 一个站点 → 前端结构 */
+function shapeStation(s) {
+  const lines = (Array.isArray(s.lines) ? s.lines : [])
+    .map((l) => shapeLine(l, s))
+    .filter((l) => l.no);
+  return {
+    sId: s.sId || "",
+    name: s.sn || "",
+    distance: typeof s.distance === "number" ? s.distance : -1,
+    subway: !!s.isSubway,
+    // 站点详情页与收藏需要的身份字段
+    physicalStId: s.physicalStId || "",
+    namesakeStId: s.namesakeStId || "",
+    firstLineId: s.firstLineId || "",
+    lat: typeof s.lat === "number" ? s.lat : null,
+    lng: typeof s.lng === "number" ? s.lng : null,
+    metros: (Array.isArray(s.metros) ? s.metros : [])
+      .map((m) => m?.lineNo || m?.name || "")
+      .filter(Boolean)
+      .slice(0, 4),
+    lines,
+  };
+}
+
 export function reshapeNearby(raw, limit = 8) {
   const stations = Array.isArray(raw?.nearSts) ? raw.nearSts : [];
   return stations
-    .map((s) => {
-      const lines = (Array.isArray(s.lines) ? s.lines : []).map((l) => {
-        const ln = l.line || {};
-        return {
-          no: String(ln.name || ln.lineNo || "").replace(/^0+/, "") || String(ln.lineNo || ""),
-          to: ln.destinationName || ln.endSn || "",
-          dir: ln.direction ?? 0,
-          first: ln.firstTime || "",
-          last: ln.lastTime || "",
-          hasBus: !!ln.hasBusInfo,
-          subway: !!(ln.isSubway || s.isSubway),
-          buses: pickBuses(l),
-          // 未发车的线路：上游给预计发车时刻（"17:25" 或 "17:08~17:18"）
-          pre: l.preArrivalTime || "",
-          tags: pickTags(l),
-        };
-      });
-      return {
-        sId: s.sId || "",
-        name: s.sn || "",
-        distance: typeof s.distance === "number" ? s.distance : -1,
-        subway: !!s.isSubway,
-        lines: lines.filter((l) => l.no),
-      };
-    })
+    .map(shapeStation)
     .filter((s) => s.name && s.lines.length)
     .sort((a, b) => (a.distance < 0 ? 1e9 : a.distance) - (b.distance < 0 ? 1e9 : b.distance))
     .slice(0, limit);
 }
 
+/** 附近站点（首页） */
 export async function fetchNearby({ cityId = "040", lat, lng, limit = 8 }) {
   if (!lat || !lng) throw new Error("缺少 lat/lng");
   const raw = await request("/bus/stop!encryptedHomePage.action", {
@@ -126,5 +146,107 @@ export async function fetchNearby({ cityId = "040", lat, lng, limit = 8 }) {
     city: CITIES[cityId] || "",
     updatedAt: Date.now(),
     stations: reshapeNearby(raw, limit),
+  };
+}
+
+/** 单个站点详情（站点页） */
+export async function fetchStation({
+  cityId = "040",
+  physicalStId,
+  sId = "",
+  namesakeStId = "",
+  firstLineId = "",
+  lat = "",
+  lng = "",
+}) {
+  if (!physicalStId) throw new Error("缺少 physicalStId");
+  const raw = await request("/bus/stop!encryptedPhyStnDetail.action", {
+    ...DEFAULT_PARAMS,
+    cityId,
+    localCityId: cityId,
+    physicalStId,
+    namesakeStId,
+    firstLineId,
+    stationId: "",
+    lat: String(lat || ""),
+    lng: String(lng || ""),
+    geo_lat: String(lat || ""),
+    geo_lng: String(lng || ""),
+    actionState: "1",
+    permission: "0",
+  });
+  const list = Array.isArray(raw?.stationList) ? raw.stationList : [];
+  const hit = list.find((s) => s.sId === sId) || list[0];
+  if (!hit) throw new Error("上游没有这个站点");
+  return {
+    cityId,
+    city: CITIES[cityId] || "",
+    updatedAt: Date.now(),
+    station: shapeStation(hit),
+  };
+}
+
+/** 单条线路详情（线路页）：沿途站点 + 车辆位置 */
+export async function fetchLine({
+  cityId = "040",
+  lineId,
+  dir = "1",
+  stationId = "",
+  lat = "",
+  lng = "",
+}) {
+  if (!lineId) throw new Error("缺少 lineId");
+  const raw = await request("/bus/line!encryptedLineDetail.action", {
+    ...DEFAULT_PARAMS,
+    cityId,
+    localCityId: cityId,
+    lineId,
+    direction: String(dir),
+    stationId,
+    targetOrder: "0",
+    lat: String(lat || ""),
+    lng: String(lng || ""),
+    geo_lat: String(lat || ""),
+    geo_lng: String(lng || ""),
+    userId: "",
+    h5Id: "",
+    unionId: "",
+    accountId: "",
+    secret: "",
+  });
+
+  const ln = raw?.line || {};
+  const stations = (Array.isArray(raw?.stations) ? raw.stations : []).map((s) => ({
+    name: s.sn || "",
+    order: typeof s.order === "number" ? s.order : 0,
+    sId: s.sId || "",
+    metropolitan: Array.isArray(s.metros) && s.metros.length > 0,
+  }));
+
+  // 车辆：order 指向它正在驶向的站序
+  const buses = (Array.isArray(raw?.buses) ? raw.buses : [])
+    .map((b) => ({
+      order: typeof b.order === "number" ? b.order : 0,
+      desc: b.busDesc || "",
+    }))
+    .filter((b) => b.order > 0);
+
+  return {
+    cityId,
+    city: CITIES[cityId] || "",
+    updatedAt: Date.now(),
+    line: {
+      id: lineId,
+      no: String(ln.name || "").replace(/^0+/, "") || String(ln.lineNo || ""),
+      from: ln.startSn || "",
+      to: ln.destinationName || ln.endSn || "",
+      dir: ln.direction ?? Number(dir),
+      first: ln.firstTime || "",
+      last: ln.lastTime || "",
+      price: ln.price || "",
+      count: typeof ln.stationsNum === "number" ? ln.stationsNum : stations.length,
+    },
+    stations,
+    buses,
   };
 }

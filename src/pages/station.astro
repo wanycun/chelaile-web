@@ -1,0 +1,131 @@
+---
+import Base from "../layouts/Base.astro";
+
+const params = Astro.url.searchParams;
+const stationName = params.get("n") || "站点";
+const physicalStId = params.get("physicalStId") || "";
+const sId = params.get("sId") || "";
+const namesakeStId = params.get("namesakeStId") || "";
+const firstLineId = params.get("firstLineId") || "";
+const cityId = params.get("cityId") || "040";
+---
+
+<Base title={`${stationName} · 车来了`}>
+  <main class="wrap">
+    <header class="top">
+      <div style="min-width:0">
+        <a class="back" href="/">← 附近站点</a>
+        <div class="city" id="name">{stationName}</div>
+        <div class="city-sub" id="status">加载中…</div>
+      </div>
+      <button class="fav big" id="fav-station" type="button" aria-label="收藏站点">☆</button>
+    </header>
+
+    <div class="list" id="list">
+      <div class="skeleton"></div>
+      <div class="skeleton"></div>
+    </div>
+    <p class="msg" id="msg"></p>
+  </main>
+
+  <script>
+    import { esc, hhmm, lineRow, getJSON } from "../scripts/util.js";
+    import { isFavStation, toggleStation, isFavLine, toggleLine } from "../scripts/favs.js";
+
+    const qp = new URLSearchParams(location.search);
+    const physicalStId = qp.get("physicalStId") || "";
+    const sId = qp.get("sId") || "";
+    const namesakeStId = qp.get("namesakeStId") || "";
+    const firstLineId = qp.get("firstLineId") || "";
+    const cityId = qp.get("cityId") || "040";
+
+    const els = {
+      list: document.getElementById("list"),
+      msg: document.getElementById("msg"),
+      status: document.getElementById("status"),
+      name: document.getElementById("name"),
+      fav: document.getElementById("fav-station"),
+    };
+
+    let station = null;
+    let timer = null;
+
+    function favIdFor(line) {
+      return `${line.lineId}#${line.dir}`;
+    }
+
+    function paintFav() {
+      if (!station) return;
+      els.fav.textContent = isFavStation(station.sId) ? "★" : "☆";
+      els.fav.classList.toggle("on", isFavStation(station.sId));
+    }
+
+    function render(data) {
+      station = data.station;
+      els.name.textContent = station.name;
+      const metro = station.metros?.length ? ` · 地铁 ${station.metros.join(" / ")}` : "";
+      els.status.textContent = `更新于 ${hhmm(data.updatedAt)}${metro}`;
+      paintFav();
+
+      els.list.innerHTML = station.lines
+        .map((l) => lineRow(l, { station, cityId, favId: favIdFor(l), favOn: isFavLine(favIdFor(l)) }))
+        .join("");
+
+      els.msg.textContent = "";
+      bindFavButtons();
+    }
+
+    function bindFavButtons() {
+      els.list.querySelectorAll("[data-fav-line]").forEach((btn) => {
+        btn.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const on = toggleLine({
+            id: btn.dataset.favLine,
+            name: btn.dataset.lineName,
+            to: btn.dataset.lineTo,
+            dir: Number(btn.dataset.lineDir || 0),
+            cityId: btn.dataset.lineCity || cityId,
+            stationId: btn.dataset.lineStation || "",
+          });
+          const now = on.lines.some((l) => l.id === btn.dataset.favLine);
+          btn.textContent = now ? "★" : "☆";
+          btn.classList.toggle("on", now);
+        });
+      });
+    }
+
+    async function load() {
+      try {
+        const q = new URLSearchParams({ physicalStId, sId, namesakeStId, firstLineId, cityId });
+        const data = await getJSON(`/api/station?${q}`);
+        render(data);
+      } catch (err) {
+        els.msg.textContent = `加载失败：${err.message}`;
+        els.msg.className = "msg err";
+      }
+    }
+
+    els.fav.addEventListener("click", () => {
+      if (!station) return;
+      toggleStation({
+        id: station.sId,
+        name: station.name,
+        sId: station.sId,
+        physicalStId: station.physicalStId,
+        namesakeStId: station.namesakeStId,
+        firstLineId: station.firstLineId,
+        cityId,
+      });
+      paintFav();
+    });
+
+    load();
+    timer = setInterval(() => {
+      if (document.visibilityState === "visible") load();
+    }, 20_000);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") load();
+    });
+  </script>
+</Base>
