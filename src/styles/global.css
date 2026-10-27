@@ -437,3 +437,24 @@ a { color: inherit; text-decoration: none; }
   background: #1d4ed8;
   color: #fff;
 }
+
+/* ── 换向 ── */
+.switch-dir {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  margin-bottom: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--card);
+  color: var(--ink-2);
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color .15s, color .15s, background .15s;
+}
+.switch-dir:hover { border-color: #3a414c; color: var(--ink); background: #171b22; }
+.switch-dir:active { transform: scale(.995); }
+.switch-dir .sw-ico { font-size: 15px; color: var(--brand-2); }

@@ -1,4 +1,4 @@
----
+﻿---
 import Base from "../layouts/Base.astro";
 
 const params = Astro.url.searchParams;
@@ -16,6 +16,11 @@ const lineNo = params.get("n") || "线路";
       <button class="fav big" id="fav-line" type="button" aria-label="收藏线路">☆</button>
     </header>
 
+    <button class="switch-dir" id="switch-dir" type="button">
+      <span class="sw-ico">⇄</span>
+      <span id="switch-to">换向</span>
+    </button>
+
     <section class="arrivals" id="arrivals" hidden></section>
     <section class="line-meta" id="meta"></section>
 
@@ -31,8 +36,8 @@ const lineNo = params.get("n") || "线路";
     import { isFavLine, toggleLine } from "../scripts/favs.js";
 
     const qp = new URLSearchParams(location.search);
-    const lineId = qp.get("lineId") || "";
-    const dir = qp.get("dir") || "1";
+    let currentLineId = qp.get("lineId") || "";
+    let currentDir = qp.get("dir") || "1";
     const cityId = qp.get("cityId") || "040";
     const stationId = qp.get("stationId") || "";
     const lineNo = qp.get("n") || "";
@@ -46,10 +51,15 @@ const lineNo = params.get("n") || "线路";
       route: document.getElementById("route"),
       msg: document.getElementById("msg"),
       fav: document.getElementById("fav-line"),
+      switchDir: document.getElementById("switch-dir"),
+      switchTo: document.getElementById("switch-to"),
     };
 
     let line = null;
-    const favId = () => `${lineId}#${dir}`;
+    const favId = () => `${currentLineId}#${currentDir}`;
+    // 方向编码在 lineId 末尾：…-1 / …-0
+    const flipLineId = (id) =>
+      id.endsWith("-1") ? id.slice(0, -2) + "-0" : id.endsWith("-0") ? id.slice(0, -2) + "-1" : id;
 
     function paintFav() {
       const on = isFavLine(favId());
@@ -59,7 +69,11 @@ const lineNo = params.get("n") || "线路";
 
     /** 最近三班：到「我这一站」还有多久、还有多远 */
     function renderArrivals(data) {
-      const target = line.targetName || "本站";
+      if (!line.targetOrder || !line.targetName) {
+        els.arrivals.hidden = true;
+        return;
+      }
+      const target = line.targetName;
       const list = data.buses.filter((b) => b.eta >= 0 || b.dist > 0).slice(0, 3);
 
       if (!list.length) {
@@ -129,6 +143,7 @@ const lineNo = params.get("n") || "线路";
       line = data.line;
       els.no.textContent = line.no || lineNo;
       els.dirTxt.textContent = `开往 ${line.to || "—"}`;
+      els.switchTo.textContent = line.from ? `往 ${line.from}` : "换向";
       els.status.textContent = `更新于 ${hhmm(data.updatedAt)} · 每 20 秒刷新`;
       paintFav();
 
@@ -142,13 +157,17 @@ const lineNo = params.get("n") || "线路";
       renderArrivals(data);
       renderRoute(data);
 
-      els.msg.textContent = data.buses.length ? "" : "暂时没有车辆在线（可能未发车或已过运营时段）";
+      if (!line.targetMatched && stationId) {
+        els.msg.textContent = "这个方向不经过刚才那一站，只能看车辆位置";
+      } else {
+        els.msg.textContent = data.buses.length ? "" : "暂时没有车辆在线（可能未发车或已过运营时段）";
+      }
       els.msg.className = "msg";
     }
 
     async function load() {
       try {
-        const q = new URLSearchParams({ lineId, dir, cityId, stationId });
+        const q = new URLSearchParams({ lineId: currentLineId, dir: currentDir, cityId, stationId });
         render(await getJSON(`/api/line?${q}`));
       } catch (err) {
         els.msg.textContent = `加载失败：${err.message}`;
@@ -156,13 +175,24 @@ const lineNo = params.get("n") || "线路";
       }
     }
 
+    els.switchDir.addEventListener("click", () => {
+      currentDir = currentDir === "1" ? "0" : "1";
+      currentLineId = flipLineId(currentLineId);
+      const q = new URLSearchParams(location.search);
+      q.set("dir", currentDir);
+      q.set("lineId", currentLineId);
+      history.replaceState(null, "", `${location.pathname}?${q.toString()}`);
+      paintFav();
+      load();
+    });
+
     els.fav.addEventListener("click", () => {
       if (!line) return;
       toggleLine({
         id: favId(),
         name: line.no,
         to: line.to,
-        dir: Number(line.dir ?? dir),
+        dir: Number(line.dir ?? currentDir),
         cityId,
         stationId,
       });

@@ -223,8 +223,14 @@ export async function fetchLine({
     metropolitan: Array.isArray(s.metros) && s.metros.length > 0,
   }));
 
-  const targetOrder = Number(raw?.targetOrder) || 0;
-  const targetStation = stations.find((s) => s.order === targetOrder);
+  // 目标站以「传进来的 stationId 是否真在这条线上」为准：
+  // 反方向往往不经过原站，此时上游会退化成第一个站，必须自己挡掉
+  const upstreamTarget = Number(raw?.targetOrder) || 0;
+  const wantId = String(stationId || "");
+  let targetStation = wantId ? stations.find((s) => String(s.sId) === wantId) : null;
+  if (!wantId) targetStation = stations.find((s) => s.order === upstreamTarget) || null;
+  const targetOrder = targetStation ? targetStation.order : 0;
+  const targetName = targetStation ? targetStation.name : "";
 
   // 车辆：order = 正在驶向的站序（配合 distanceToSc 就是「车在两站之间」）
   // travels 里带的是「到目标站」的预测，distanceToWaitStn 是到目标站的距离
@@ -258,7 +264,9 @@ export async function fetchLine({
       price: ln.price || "",
       count: typeof ln.stationsNum === "number" ? ln.stationsNum : stations.length,
       targetOrder,
-      targetName: targetStation ? targetStation.name : "",
+      targetName,
+      /** 传了站但这条线不经停该站时为 false，前端据此提示 */
+      targetMatched: !!targetStation,
     },
     stations,
     buses,
