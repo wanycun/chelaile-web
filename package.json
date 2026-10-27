@@ -1,0 +1,19 @@
+{
+  "name": "chelaile-web",
+  "type": "module",
+  "version": "1.0.0",
+  "private": true,
+  "description": "车来了 · 附近站点实时公交（Astro + Cloudflare Pages Functions）",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro build && wrangler pages dev dist",
+    "deploy": "astro build && wrangler pages deploy dist --project-name chelaile --branch main --commit-dirty=true"
+  },
+  "dependencies": {
+    "astro": "^5.0.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

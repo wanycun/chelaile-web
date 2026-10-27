@@ -1,0 +1,191 @@
+---
+import Base from "../layouts/Base.astro";
+---
+
+<Base>
+  <main class="wrap">
+    <header class="top">
+      <div>
+        <div class="city" id="city">附近站点</div>
+        <div class="city-sub" id="status">正在定位…</div>
+      </div>
+      <button class="refresh" id="refresh" type="button">
+        <span id="refresh-icon">⟳</span> 刷新
+      </button>
+    </header>
+
+    <div class="list" id="list">
+      <div class="skeleton"></div>
+      <div class="skeleton"></div>
+      <div class="skeleton"></div>
+    </div>
+
+    <p class="msg" id="msg"></p>
+
+    <p class="foot">
+      数据来自车来了 H5 接口 · 每 30 秒自动刷新<br />
+      仅供个人查看，不做批量采集
+    </p>
+  </main>
+
+  <script>
+    const els = {
+      list: document.getElementById("list"),
+      msg: document.getElementById("msg"),
+      status: document.getElementById("status"),
+      city: document.getElementById("city"),
+      refresh: document.getElementById("refresh"),
+      icon: document.getElementById("refresh-icon"),
+    };
+
+    // 定位失败时的兜底坐标（广州 · 体育西路）
+    const FALLBACK = { lat: 23.142166, lng: 113.316086, label: "体育西路（默认位置）" };
+
+    let state = { cityId: "040", lat: null, lng: null, busy: false, timer: null };
+    let lastUpdated = 0;
+
+    const esc = (s) =>
+      String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+    function fmtEta(sec) {
+      if (typeof sec !== "number" || sec < 0) return { text: "—", cls: "none", unit: "" };
+      if (sec < 60) return { text: "即将", cls: "soon", unit: "到站" };
+      const m = Math.round(sec / 60);
+      return { text: String(m), cls: m <= 2 ? "soon" : "", unit: "分钟" };
+    }
+
+    function fmtDist(m) {
+      if (typeof m !== "number" || m < 0) return "";
+      return m < 1000 ? `${m}m` : `${(m / 1000).toFixed(1)}km`;
+    }
+
+    function renderStation(st) {
+      const lines = st.lines
+        .map((l) => {
+          const first = l.buses[0];
+          const second = l.buses[1];
+          const eta = fmtEta(first?.eta);
+          const meta = [];
+          if (first && first.left > 0) meta.push(`还有 ${first.left} 站`);
+          else if (first && first.dist > 0) meta.push(fmtDist(first.dist));
+          if (l.first && l.last) meta.push(`${l.first}–${l.last}`);
+          const tags = l.tags.length ? `<span class="tag">${esc(l.tags[0])}</span>` : "";
+          // 未发车：上游给的是预计发车时刻，比一个「—」有用
+          const noBus = !first && l.pre;
+          const main = noBus
+            ? `<span class="num none">${esc(l.pre)}</span><span class="unit">发车</span>`
+            : `<span class="num ${eta.cls}">${eta.text}</span>${eta.unit ? `<span class="unit">${eta.unit}</span>` : ""}`;
+          return `
+            <div class="line">
+              <span class="badge${l.subway ? " metro" : ""}">${esc(l.no)}</span>
+              <div class="dir">
+                <div class="to">开往 ${esc(l.to || "—")}${tags}</div>
+                <div class="meta">${esc(meta.join(" · "))}</div>
+              </div>
+              <div class="eta">
+                <div>${main}</div>
+                ${second && second.eta >= 0 ? `<div class="second">下一辆 ${Math.round(second.eta / 60)} 分</div>` : ""}
+              </div>
+            </div>`;
+        })
+        .join("");
+
+      return `
+        <section class="station">
+          <div class="st-head">
+            <div class="st-name">${esc(st.name)}${st.subway ? '<span class="sub">地铁</span>' : ""}</div>
+            <div class="st-dist">${st.distance >= 0 ? fmtDist(st.distance) : ""}</div>
+          </div>
+          ${lines}
+        </section>`;
+    }
+
+    function setMsg(text, isErr = false) {
+      els.msg.textContent = text || "";
+      els.msg.className = "msg" + (isErr ? " err" : "");
+    }
+
+    function render(data) {
+      if (!data.stations?.length) {
+        els.list.innerHTML = "";
+        setMsg("附近没有查到线路，换个位置试试。");
+        return;
+      }
+      els.city.textContent = data.city || "附近站点";
+      els.list.innerHTML = data.stations.map(renderStation).join("");
+      const t = new Date(data.updatedAt || Date.now());
+      const hh = String(t.getHours()).padStart(2, "0");
+      const mm = String(t.getMinutes()).padStart(2, "0");
+      els.status.textContent = `更新于 ${hh}:${mm} · 每 30 秒自动刷新`;
+      setMsg("");
+    }
+
+    async function load({ silent = false } = {}) {
+      if (state.busy || state.lat == null) return;
+      state.busy = true;
+      if (!silent) {
+        els.refresh.disabled = true;
+        els.icon.style.animation = "spin 900ms linear infinite";
+      }
+      try {
+        const q = new URLSearchParams({
+          lat: String(state.lat),
+          lng: String(state.lng),
+          cityId: state.cityId,
+          limit: "8",
+        });
+        const res = await fetch(`/api/nearby?${q}`, { headers: { Accept: "application/json" } });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || data.error || `HTTP ${res.status}`);
+        if (data.empty) {
+          els.list.innerHTML = "";
+          setMsg(data.message || "附近没有查到线路。");
+        } else {
+          render(data);
+        }
+        lastUpdated = Date.now();
+      } catch (err) {
+        setMsg(`查询失败：${err.message}`, true);
+      } finally {
+        state.busy = false;
+        els.refresh.disabled = false;
+        els.icon.style.animation = "";
+      }
+    }
+
+    function locate() {
+      els.status.textContent = "正在获取位置…";
+      if (!navigator.geolocation) {
+        state.lat = FALLBACK.lat;
+        state.lng = FALLBACK.lng;
+        els.status.textContent = FALLBACK.label;
+        load();
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          state.lat = pos.coords.latitude;
+          state.lng = pos.coords.longitude;
+          load();
+        },
+        () => {
+          state.lat = FALLBACK.lat;
+          state.lng = FALLBACK.lng;
+          els.status.textContent = FALLBACK.label + " · 未授权定位";
+          load();
+        },
+        { timeout: 8000, maximumAge: 60_000 },
+      );
+    }
+
+    els.refresh.addEventListener("click", () => load());
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible" && Date.now() - lastUpdated > 20_000) load({ silent: true });
+    });
+
+    locate();
+    state.timer = setInterval(() => {
+      if (document.visibilityState === "visible") load({ silent: true });
+    }, 30_000);
+  </script>
+</Base>

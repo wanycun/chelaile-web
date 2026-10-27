@@ -1,0 +1,197 @@
+:root {
+  --bg: #0b0d10;
+  --card: #13161c;
+  --card-2: #171b22;
+  --line: #23272f;
+  --ink: #e9ebee;
+  --ink-2: #a5abb5;
+  --ink-3: #6d7480;
+  --brand: #3b82f6;
+  --brand-2: #60a5fa;
+  --ok: #34d399;
+  --warn: #fbbf24;
+  --radius: 14px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei", system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  min-height: 100dvh;
+  padding: max(12px, env(safe-area-inset-top)) 14px calc(18px + env(safe-area-inset-bottom));
+}
+
+.wrap { max-width: 560px; margin: 0 auto; }
+
+/* ── 顶部 ── */
+.top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 2px 14px;
+}
+
+.city {
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.city-sub {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.refresh {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 13px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--ink-2);
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color .15s, color .15s;
+}
+.refresh:hover { border-color: #343a44; color: var(--ink); }
+.refresh[disabled] { opacity: .5; cursor: default; }
+.refresh .spin { display: inline-block; animation: spin 900ms linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── 站点卡片 ── */
+.list { display: flex; flex-direction: column; gap: 10px; }
+
+.station {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.st-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.st-name { font-size: 16px; font-weight: 700; }
+.st-name .sub {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: #1c2a3f;
+  color: var(--brand-2);
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: 2px;
+}
+.st-dist { font-size: 12px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+
+.line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 14px;
+}
+.line + .line { border-top: 1px solid #1b1f26; }
+
+.badge {
+  flex: none;
+  min-width: 52px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: linear-gradient(180deg, #2f6fd8, #2459b5);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 800;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .01em;
+}
+.badge.metro { background: linear-gradient(180deg, #16a34a, #12813c); min-width: 44px; }
+
+.dir { flex: 1; min-width: 0; }
+.dir .to {
+  font-size: 13.5px;
+  color: var(--ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dir .meta {
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.eta {
+  flex: none;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.eta .num { font-size: 17px; font-weight: 800; color: var(--ok); }
+.eta .num.soon { color: var(--warn); }
+.eta .num.none { color: var(--ink-3); font-weight: 600; font-size: 14px; }
+.eta .unit { margin-left: 2px; font-size: 11px; color: var(--ink-3); }
+.eta .second { margin-top: 2px; font-size: 11.5px; color: var(--ink-3); }
+
+.tag {
+  display: inline-block;
+  margin-right: 4px;
+  padding: 0 5px;
+  border-radius: 4px;
+  border: 1px solid #3a2f1a;
+  background: #241d0f;
+  color: #d8a94a;
+  font-size: 10.5px;
+}
+
+/* ── 状态 ── */
+.msg {
+  margin: 18px 2px 0;
+  font-size: 13px;
+  color: var(--ink-3);
+  text-align: center;
+}
+.msg.err { color: #f87171; }
+
+.skeleton {
+  height: 132px;
+  border-radius: var(--radius);
+  background: linear-gradient(100deg, #14171d 30%, #1b1f27 50%, #14171d 70%);
+  background-size: 200% 100%;
+  animation: shimmer 1.3s infinite linear;
+}
+@keyframes shimmer { to { background-position: -200% 0; } }
+
+.foot {
+  margin-top: 16px;
+  text-align: center;
+  font-size: 11.5px;
+  color: #4b515a;
+  line-height: 1.7;
+}
+.foot a { color: #5f6670; text-decoration: none; border-bottom: 1px dotted #3a3f47; }
+
+@media (prefers-color-scheme: light) {
+  /* 保持深色：这个页面就是给夜里/路上快速看一眼用的 */
+}
