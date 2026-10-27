@@ -1,4 +1,4 @@
-// 前端共用工具：转义、时间格式化、线路行渲染
+﻿// 前端共用工具：转义、时间格式化、线路行渲染
 export const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
@@ -26,6 +26,7 @@ export function lineHref(line, station, cityId = "040") {
     dir: String(line.dir),
     cityId,
     stationId: station?.sId || "",
+    st: station?.name || "",
     n: line.no || "",
   });
   return `/line/?${q}`;

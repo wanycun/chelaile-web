@@ -21,6 +21,8 @@ const lineNo = params.get("n") || "线路";
       <span id="switch-to">换向</span>
     </button>
 
+    <p class="notice" id="notice" hidden></p>
+
     <section class="arrivals" id="arrivals" hidden></section>
     <section class="line-meta" id="meta"></section>
 
@@ -36,6 +38,7 @@ const lineNo = params.get("n") || "线路";
     import { isFavLine, toggleLine } from "../scripts/favs.js";
 
     const qp = new URLSearchParams(location.search);
+    const stationName = qp.get("st") || "";
     let currentLineId = qp.get("lineId") || "";
     let currentDir = qp.get("dir") || "1";
     const cityId = qp.get("cityId") || "040";
@@ -53,6 +56,7 @@ const lineNo = params.get("n") || "线路";
       fav: document.getElementById("fav-line"),
       switchDir: document.getElementById("switch-dir"),
       switchTo: document.getElementById("switch-to"),
+      notice: document.getElementById("notice"),
     };
 
     let line = null;
@@ -157,11 +161,12 @@ const lineNo = params.get("n") || "线路";
       renderArrivals(data);
       renderRoute(data);
 
-      if (!line.targetMatched && stationId) {
-        els.msg.textContent = "这个方向不经过刚才那一站，只能看车辆位置";
-      } else {
-        els.msg.textContent = data.buses.length ? "" : "暂时没有车辆在线（可能未发车或已过运营时段）";
+      const missed = !line.targetMatched && !!stationId;
+      els.notice.hidden = !missed;
+      if (missed) {
+        els.notice.textContent = `这个方向不经过「${stationName || "刚才那一站"}」，只能看车辆位置；换回去可以查那站的时间`;
       }
+      els.msg.textContent = data.buses.length ? "" : "暂时没有车辆在线（可能未发车或已过运营时段）";
       els.msg.className = "msg";
     }
 
