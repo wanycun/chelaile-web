@@ -6,3 +6,5 @@ dist/
 *.log
 test-*.mjs
 probe-*.mjs
+_preview.png
+_*.png
