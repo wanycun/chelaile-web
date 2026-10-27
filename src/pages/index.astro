@@ -85,7 +85,7 @@ import Base from "../layouts/Base.astro";
 
     function stationCard(st) {
       const lines = st.lines
-        .map((l) => lineRow(l, { station: st, cityId: CITY, favId: `${l.lineId}#${l.dir}` }))
+        .map((l) => lineRow(l, { station: st, cityId: CITY }))
         .join("");
       return `
         <section class="station">
