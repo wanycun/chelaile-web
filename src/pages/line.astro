@@ -2,10 +2,6 @@
 import Base from "../layouts/Base.astro";
 
 const params = Astro.url.searchParams;
-const lineId = params.get("lineId") || "";
-const dir = params.get("dir") || "1";
-const cityId = params.get("cityId") || "040";
-const stationId = params.get("stationId") || "";
 const lineNo = params.get("n") || "线路";
 ---
 
@@ -20,9 +16,10 @@ const lineNo = params.get("n") || "线路";
       <button class="fav big" id="fav-line" type="button" aria-label="收藏线路">☆</button>
     </header>
 
+    <section class="arrivals" id="arrivals" hidden></section>
     <section class="line-meta" id="meta"></section>
 
-    <div class="list" id="route">
+    <div class="list route" id="route">
       <div class="skeleton"></div>
       <div class="skeleton"></div>
     </div>
@@ -30,7 +27,7 @@ const lineNo = params.get("n") || "线路";
   </main>
 
   <script>
-    import { esc, hhmm, getJSON } from "../scripts/util.js";
+    import { esc, hhmm, fmtDist, fmtEta, getJSON } from "../scripts/util.js";
     import { isFavLine, toggleLine } from "../scripts/favs.js";
 
     const qp = new URLSearchParams(location.search);
@@ -45,6 +42,7 @@ const lineNo = params.get("n") || "线路";
       dirTxt: document.getElementById("dir-txt"),
       status: document.getElementById("status"),
       meta: document.getElementById("meta"),
+      arrivals: document.getElementById("arrivals"),
       route: document.getElementById("route"),
       msg: document.getElementById("msg"),
       fav: document.getElementById("fav-line"),
@@ -59,6 +57,74 @@ const lineNo = params.get("n") || "线路";
       els.fav.classList.toggle("on", on);
     }
 
+    /** 最近三班：到「我这一站」还有多久、还有多远 */
+    function renderArrivals(data) {
+      const target = line.targetName || "本站";
+      const list = data.buses.filter((b) => b.eta >= 0 || b.dist > 0).slice(0, 3);
+
+      if (!list.length) {
+        els.arrivals.hidden = true;
+        return;
+      }
+      els.arrivals.hidden = false;
+
+      const rows = list
+        .map((b, i) => {
+          const eta = fmtEta(b.eta);
+          const left = line.targetOrder && b.order ? line.targetOrder - b.order : 0;
+          const meta = [];
+          if (left > 0) meta.push(`还有 ${left} 站`);
+          if (b.dist > 0) meta.push(fmtDist(b.dist));
+          return `
+            <div class="arr-row">
+              <span class="arr-idx">${i + 1}</span>
+              <span class="arr-main">
+                <span class="num ${eta.cls}">${eta.text}</span>${eta.unit ? `<span class="unit">${eta.unit}</span>` : ""}
+              </span>
+              <span class="arr-meta">${esc(meta.join(" · ")) || "—"}</span>
+            </div>`;
+        })
+        .join("");
+
+      els.arrivals.innerHTML = `
+        <div class="arr-head">到 ${esc(target)} 最近 ${list.length} 班</div>
+        ${rows}`;
+    }
+
+    function renderRoute(data) {
+      // 车按「正在驶向的站序」分组，渲染在该站上方 → 视觉上就在两站之间
+      const byOrder = new Map();
+      for (const b of data.buses) {
+        if (!byOrder.has(b.order)) byOrder.set(b.order, []);
+        byOrder.get(b.order).push(b);
+      }
+
+      els.route.innerHTML = data.stations
+        .map((s, i) => {
+          const buses = byOrder.get(s.order) || [];
+          const busRows = buses
+            .map(
+              (b) =>
+                `<div class="bus-row"><span class="bus-ico">🚌</span><span class="bus-txt">距 ${esc(s.name)}${
+                  b.distNext > 0 ? ` ${fmtDist(b.distNext)}` : " 即将到站"
+                }</span></div>`,
+            )
+            .join("");
+          const first = i === 0;
+          const last = i === data.stations.length - 1;
+          const isTarget = line.targetOrder && s.order === line.targetOrder;
+          return `
+            ${busRows}
+            <div class="stop${isTarget ? " target" : ""}">
+              <span class="stop-dot${first || last ? " end" : ""}"></span>
+              <span class="stop-name">${esc(s.name)}${s.metropolitan ? '<span class="sub">地铁</span>' : ""}${
+                isTarget ? '<span class="sub target">本站</span>' : ""
+              }</span>
+            </div>`;
+        })
+        .join("");
+    }
+
     function render(data) {
       line = data.line;
       els.no.textContent = line.no || lineNo;
@@ -66,7 +132,6 @@ const lineNo = params.get("n") || "线路";
       els.status.textContent = `更新于 ${hhmm(data.updatedAt)} · 每 20 秒刷新`;
       paintFav();
 
-      const busOrders = new Set(data.buses.map((b) => b.order));
       const meta = [];
       if (line.first && line.last) meta.push(`首末班 ${line.first}–${line.last}`);
       if (line.price) meta.push(line.price);
@@ -74,19 +139,8 @@ const lineNo = params.get("n") || "线路";
       meta.push(`当前 ${data.buses.length} 辆车`);
       els.meta.innerHTML = meta.map((m) => `<span>${esc(m)}</span>`).join("");
 
-      els.route.innerHTML = data.stations
-        .map((s, i) => {
-          const hasBus = busOrders.has(s.order);
-          const first = i === 0;
-          const last = i === data.stations.length - 1;
-          return `
-            <div class="stop${hasBus ? " has-bus" : ""}">
-              <span class="stop-dot${first || last ? " end" : ""}"></span>
-              <span class="stop-name">${esc(s.name)}${s.metropolitan ? '<span class="sub">地铁</span>' : ""}</span>
-              ${hasBus ? '<span class="bus">🚌</span>' : ""}
-            </div>`;
-        })
-        .join("");
+      renderArrivals(data);
+      renderRoute(data);
 
       els.msg.textContent = data.buses.length ? "" : "暂时没有车辆在线（可能未发车或已过运营时段）";
       els.msg.className = "msg";

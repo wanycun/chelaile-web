@@ -1,4 +1,4 @@
-﻿// 前端共用工具：转义、时间格式化、线路行渲染
+// 前端共用工具：转义、时间格式化、线路行渲染
 export const esc = (s) =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
@@ -56,6 +56,12 @@ export function lineRow(line, { station, cityId = "040", favId = "", favOn = fal
   if (first && first.left > 0) meta.push(`还有 ${first.left} 站`);
   else if (first && first.dist > 0) meta.push(fmtDist(first.dist));
   if (line.first && line.last) meta.push(`${line.first}–${line.last}`);
+  // 最近三班里的后两班，压成一行小字
+  const follow = (line.buses || [])
+    .slice(1, 3)
+    .filter((b) => b.eta >= 0)
+    .map((b) => `${Math.round(b.eta / 60)} 分`)
+    .join(" / ");
 
   const noBus = !first && line.pre;
   const main = noBus
@@ -78,7 +84,7 @@ export function lineRow(line, { station, cityId = "040", favId = "", favOn = fal
         </span>
         <span class="eta">
           <span class="eta-main">${main}</span>
-          ${second && second.eta >= 0 ? `<span class="second">下一辆 ${Math.round(second.eta / 60)} 分</span>` : ""}
+          ${follow ? `<span class="second">后续 ${follow}</span>` : ""}
         </span>
       </a>
       ${

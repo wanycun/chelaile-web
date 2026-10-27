@@ -53,7 +53,7 @@ async function request(path, params) {
   return data;
 }
 
-/** 把 stnStates 压成最多两条到站信息 */
+/** 把 stnStates 压成最多三条到站信息（最近三班） */
 function pickBuses(line) {
   const states = Array.isArray(line?.stnStates) ? line.stnStates : [];
   return states
@@ -65,7 +65,7 @@ function pickBuses(line) {
     }))
     .filter((b) => b.eta >= 0 || b.dist > 0)
     .sort((a, b) => (a.eta < 0 ? 1e9 : a.eta) - (b.eta < 0 ? 1e9 : b.eta))
-    .slice(0, 2);
+    .slice(0, 3);
 }
 
 function pickTags(line) {
@@ -223,13 +223,25 @@ export async function fetchLine({
     metropolitan: Array.isArray(s.metros) && s.metros.length > 0,
   }));
 
-  // 车辆：order 指向它正在驶向的站序
+  const targetOrder = Number(raw?.targetOrder) || 0;
+  const targetStation = stations.find((s) => s.order === targetOrder);
+
+  // 车辆：order = 正在驶向的站序（配合 distanceToSc 就是「车在两站之间」）
+  // travels 里带的是「到目标站」的预测，distanceToWaitStn 是到目标站的距离
   const buses = (Array.isArray(raw?.buses) ? raw.buses : [])
-    .map((b) => ({
-      order: typeof b.order === "number" ? b.order : 0,
-      desc: b.busDesc || "",
-    }))
-    .filter((b) => b.order > 0);
+    .map((b) => {
+      const toTarget = (Array.isArray(b.travels) ? b.travels : []).find(
+        (t) => Number(t.order) === targetOrder,
+      );
+      return {
+        order: typeof b.order === "number" ? b.order : 0,
+        distNext: typeof b.distanceToSc === "number" && b.distanceToSc >= 0 ? b.distanceToSc : -1,
+        eta: toTarget && typeof toTarget.travelTime === "number" ? toTarget.travelTime : -1,
+        dist: typeof b.distanceToWaitStn === "number" && b.distanceToWaitStn >= 0 ? b.distanceToWaitStn : -1,
+      };
+    })
+    .filter((b) => b.order > 0)
+    .sort((a, b) => (a.eta < 0 ? 1e9 : a.eta) - (b.eta < 0 ? 1e9 : b.eta));
 
   return {
     cityId,
@@ -245,6 +257,8 @@ export async function fetchLine({
       last: ln.lastTime || "",
       price: ln.price || "",
       count: typeof ln.stationsNum === "number" ? ln.stationsNum : stations.length,
+      targetOrder,
+      targetName: targetStation ? targetStation.name : "",
     },
     stations,
     buses,

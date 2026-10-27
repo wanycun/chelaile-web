@@ -1,4 +1,4 @@
-﻿---
+---
 import Base from "../layouts/Base.astro";
 ---
 
@@ -54,20 +54,82 @@ import Base from "../layouts/Base.astro";
     let state = { lat: null, lng: null, busy: false };
     let lastUpdated = 0;
 
-    function renderFavs() {
-      const favs = getFavs();
+    const ETA_CACHE = "cl-st-eta-v1";
+
+    function readEtaCache(id) {
+      try {
+        const c = JSON.parse(sessionStorage.getItem(ETA_CACHE) || "{}");
+        const hit = c[id];
+        if (hit && Date.now() - hit.t < 25_000) return hit.eta;
+      } catch {
+        /* ignore */
+      }
+      return null;
+    }
+
+    function writeEtaCache(id, eta) {
+      try {
+        const c = JSON.parse(sessionStorage.getItem(ETA_CACHE) || "{}");
+        c[id] = { t: Date.now(), eta };
+        sessionStorage.setItem(ETA_CACHE, JSON.stringify(c));
+      } catch {
+        /* ignore */
+      }
+    }
+
+    /** 站点里所有线路中最早的一班（秒），没有就 -1 */
+    function soonestEta(data) {
+      let best = -1;
+      for (const l of data.station?.lines || []) {
+        const e = l.buses?.[0]?.eta;
+        if (typeof e === "number" && e >= 0 && (best < 0 || e < best)) best = e;
+      }
+      return best;
+    }
+
+    async function stationEta(s) {
+      const cached = readEtaCache(s.id);
+      if (cached !== null) return cached;
+      try {
+        const q = new URLSearchParams({
+          physicalStId: s.physicalStId || "",
+          sId: s.sId || s.id,
+          namesakeStId: s.namesakeStId || "",
+          firstLineId: s.firstLineId || "",
+          cityId: s.cityId || CITY,
+        });
+        const data = await getJSON(`/api/station?${q}`);
+        const eta = soonestEta(data);
+        writeEtaCache(s.id, eta);
+        return eta;
+      } catch {
+        return -1;
+      }
+    }
+
+    function favStationChip(s, eta) {
+      const q = new URLSearchParams({
+        physicalStId: s.physicalStId || "",
+        sId: s.sId || s.id,
+        namesakeStId: s.namesakeStId || "",
+        firstLineId: s.firstLineId || "",
+        cityId: s.cityId || CITY,
+        n: s.name,
+      });
+      let tail = "";
+      if (eta === undefined) tail = '<span class="chip-eta">…</span>';
+      else if (eta >= 0) {
+        const m = Math.max(1, Math.round(eta / 60));
+        tail = `<span class="chip-eta${m <= 2 ? " soon" : ""}">${m} 分</span>`;
+      }
+      return `<a class="chip fav-station" href="/station/?${q}">🚏 ${esc(s.name)}${tail}</a>`;
+    }
+
+    function drawFavs(favs, etaMap) {
       const items = [
-        ...favs.stations.map((s) => {
-          const q = new URLSearchParams({
-            physicalStId: s.physicalStId || "",
-            sId: s.sId || s.id,
-            namesakeStId: s.namesakeStId || "",
-            firstLineId: s.firstLineId || "",
-            cityId: s.cityId || CITY,
-            n: s.name,
-          });
-          return `<a class="chip fav-station" href="/station/?${q}">🚏 ${esc(s.name)}</a>`;
-        }),
+        ...favs.stations.map((s) =>
+          favStationChip(s, etaMap ? etaMap.get(s.id) : undefined),
+        ),
         ...favs.lines.map((l) => {
           const q = new URLSearchParams({
             lineId: String(l.id || "").split("#")[0],
@@ -81,6 +143,20 @@ import Base from "../layouts/Base.astro";
       ];
       els.favs.hidden = items.length === 0;
       els.favsRow.innerHTML = items.join("");
+    }
+
+    async function hydrateFavEtas(stations) {
+      const targets = stations.slice(0, 6);
+      if (!targets.length) return;
+      const etas = await Promise.all(targets.map((s) => stationEta(s)));
+      const map = new Map(targets.map((s, i) => [s.id, etas[i]]));
+      drawFavs(getFavs(), map);
+    }
+
+    function renderFavs() {
+      const favs = getFavs();
+      drawFavs(favs);
+      hydrateFavEtas(favs.stations);
     }
 
     function stationCard(st) {
