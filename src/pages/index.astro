@@ -107,6 +107,45 @@ import Base from "../layouts/Base.astro";
       }
     }
 
+    /** 收藏线路的参照站与方向（id 形如 lineId#dir） */
+    function lineIdDir(l) {
+      const [lineId, dirTail] = String(l.id || "").split("#");
+      return { lineId, dir: String(l.dir ?? dirTail ?? "1") };
+    }
+
+    /** 一条线路里最早的一班（秒），没有就 -1 */
+    function soonestLineEta(data) {
+      let best = -1;
+      for (const b of data.buses || []) {
+        if (typeof b.eta === "number" && b.eta >= 0 && (best < 0 || b.eta < best)) best = b.eta;
+      }
+      return best;
+    }
+
+    async function lineEta(l) {
+      // 没有参照站时上游会拿别的站当目标， ETA 不可信，宁可不显示
+      if (!l.stationId) return -1;
+      const key = `L:${l.id}`;
+      const cached = readEtaCache(key);
+      if (cached !== null) return cached;
+      const { lineId, dir } = lineIdDir(l);
+      if (!lineId) return -1;
+      try {
+        const q = new URLSearchParams({
+          lineId,
+          dir,
+          cityId: l.cityId || CITY,
+          stationId: l.stationId,
+        });
+        const data = await getJSON(`/api/line?${q}`);
+        const eta = data.line?.targetMatched ? soonestLineEta(data) : -1;
+        writeEtaCache(key, eta);
+        return eta;
+      } catch {
+        return -1;
+      }
+    }
+
     function favStationChip(s, eta) {
       const q = new URLSearchParams({
         physicalStId: s.physicalStId || "",
@@ -116,13 +155,16 @@ import Base from "../layouts/Base.astro";
         cityId: s.cityId || CITY,
         n: s.name,
       });
-      let tail = "";
-      if (eta === undefined) tail = '<span class="chip-eta">…</span>';
-      else if (eta >= 0) {
+      return `<a class="chip fav-station" href="/station/?${q}">🚏 ${esc(s.name)}${chipTail(eta)}</a>`;
+    }
+
+    function chipTail(eta) {
+      if (eta === undefined) return '<span class="chip-eta">…</span>';
+      if (eta >= 0) {
         const m = Math.max(1, Math.round(eta / 60));
-        tail = `<span class="chip-eta${m <= 2 ? " soon" : ""}">${m} 分</span>`;
+        return `<span class="chip-eta${m <= 2 ? " soon" : ""}">${m} 分</span>`;
       }
-      return `<a class="chip fav-station" href="/station/?${q}">🚏 ${esc(s.name)}${tail}</a>`;
+      return "";
     }
 
     function drawFavs(favs, etaMap) {
@@ -138,25 +180,31 @@ import Base from "../layouts/Base.astro";
             stationId: l.stationId || "",
             n: l.name,
           });
-          return `<a class="chip fav-line" href="/line/?${q}">🚌 ${esc(l.name)} → ${esc(l.to || "")}</a>`;
+          return `<a class="chip fav-line" href="/line/?${q}">🚌 ${esc(l.name)} → ${esc(l.to || "")}${chipTail(etaMap ? etaMap.get(`L:${l.id}`) : undefined)}</a>`;
         }),
       ];
       els.favs.hidden = items.length === 0;
       els.favsRow.innerHTML = items.join("");
     }
 
-    async function hydrateFavEtas(stations) {
-      const targets = stations.slice(0, 6);
-      if (!targets.length) return;
-      const etas = await Promise.all(targets.map((s) => stationEta(s)));
-      const map = new Map(targets.map((s, i) => [s.id, etas[i]]));
+    async function hydrateFavEtas(favs) {
+      const stations = favs.stations.slice(0, 6);
+      const lines = favs.lines.slice(0, 4);
+      if (!stations.length && !lines.length) return;
+      const [stEtas, lnEtas] = await Promise.all([
+        Promise.all(stations.map((s) => stationEta(s))),
+        Promise.all(lines.map((l) => lineEta(l))),
+      ]);
+      const map = new Map();
+      stations.forEach((s, i) => map.set(s.id, stEtas[i]));
+      lines.forEach((l, i) => map.set(`L:${l.id}`, lnEtas[i]));
       drawFavs(getFavs(), map);
     }
 
     function renderFavs() {
       const favs = getFavs();
       drawFavs(favs);
-      hydrateFavEtas(favs.stations);
+      hydrateFavEtas(favs);
     }
 
     function stationCard(st) {
