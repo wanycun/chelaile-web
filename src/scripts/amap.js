@@ -197,8 +197,9 @@ export async function createBusMap(el, { routes }) {
   const stationDotHtml = (dot) =>
     `<span style="flex:none;width:${dot}px;height:${dot}px;border-radius:50%;background:#1B5BFF;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.35)"></span>`;
 
-  const stationLabelHtml = (name, isTarget, dy) =>
-    `<span class="st-label" style="background:rgba(255,255,255,.94);border:1px solid #d1d5db;border-radius:6px;padding:2px 7px;font-size:11.5px;font-weight:${isTarget ? 800 : 600};color:${isTarget ? "#1D4ED8" : "#374151"};white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.15);transform:translateY(${dy - 4}px)">${esc(name)}</span>`;
+  // 标签单独成标记：位置由 marker 的经纬度 + offset 定，不再用 translateY 错位
+  const stationLabelHtml = (name, isTarget) =>
+    `<span class="st-label" style="background:rgba(255,255,255,.94);border:1px solid #d1d5db;border-radius:6px;padding:2px 7px;font-size:11.5px;font-weight:${isTarget ? 800 : 600};color:${isTarget ? "#1D4ED8" : "#374151"};white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.15)">${esc(name)}</span>`;
 
   function renderStationMarkers() {
     removeMarkers(stationMarkers);
@@ -228,7 +229,8 @@ export async function createBusMap(el, { routes }) {
           isTarget,
           isEnd,
         });
-        const item = { s, pos, isTarget, isEnd, order: s.order };
+        const anchor = map.lngLatToContainer(new AMap.LngLat(pos[0], pos[1]));
+        const item = { s, pos, isTarget, isEnd, order: s.order, anchor };
         if (showLabel) candidates.push(item);
         else dotsOnly.push(item);
       }
@@ -237,56 +239,82 @@ export async function createBusMap(el, { routes }) {
       (a, b) =>
         (a.isTarget ? 0 : a.isEnd ? 1 : 2) - (b.isTarget ? 0 : b.isEnd ? 1 : 2) || a.order - b.order,
     );
+    // 目标站圆点盒（障碍物）：目标站是「你在的站」，别的标签一旦盖住它，目标站
+    // 圆点就看不见了，所以别的标签落点必须绕开它；目标站自己的标签盒从圆点边缘
+    // 5px 外起，本来就不重叠，放进来也无妨。其余圆点不需要当障碍物：圆点层级
+    // 200 低于一切标签（400/500），圆点盖不住任何标签文字；标签偶尔压住某个
+    // 普通圆点只是该圆点被白底遮住，不影响站名可读。
+    // （曾试过把全部圆点盒都当障碍物：站间距仅 12px，dy=0 的标签盒里总有圆点，
+    // 全部标签被逼进上下错开带，9 个标签里 2–3 个 6 个落点全失败、退回只剩圆点，
+    // 比现状更糟，已放弃。）
+    let targetDotBox = null;
+    const targetItem = candidates.find((c) => c.isTarget);
+    if (targetItem) {
+      const ta = targetItem.anchor;
+      targetDotBox = { x0: ta.x - 10, x1: ta.x + 10, y0: ta.y - 10, y1: ta.y + 10 };
+    }
     const keptBoxes = [];
+    // 圆点与标签分开成两个标记。根因（终点站标签被盖）：以前圆点+标签在同一个
+    // Marker 里、非目标站 zIndex 全是 200，标记按优先级顺序添加——后加的圆点
+    // 标记（dotsOnly 在 candidates 之后、以及后加的邻站标签标记）会画在先加的
+    // 终点站标签之上。分开后层级严格分层：圆点一律 200 < 标签 400（目标站 500），
+    // 带文字的标签永远画在一切圆点之上，与添加顺序无关。anchor 显式写死
+    // top-left（高德默认即 top-left）：内容左上角 = 经纬度点 + offset。
     const drawStation = (item, placement) => {
       const { s, pos, isTarget } = item;
       const dot = isTarget ? 16 : 10;
-      const labelWidth = estimateLabelWidth(s.name);
-      const label = placement ? stationLabelHtml(s.name, isTarget, placement.dy) : "";
-      const dotHtml = stationDotHtml(dot);
-      // 标签在圆点左侧时内容顺序调换，并把 offset 左移一个标签宽，保证圆点仍落在站位上
-      const content =
-        placement && placement.side === "left"
-          ? `<div style="display:flex;align-items:center;gap:5px">${label}${dotHtml}</div>`
-          : `<div style="display:flex;align-items:center;gap:5px">${dotHtml}${label}</div>`;
-      const offsetX =
-        placement && placement.side === "left" ? -(labelWidth + 5 + dot / 2) : -dot / 2;
-      const marker = new AMap.Marker({
+      const dotMarker = new AMap.Marker({
         position: pos,
-        content,
-        offset: new AMap.Pixel(offsetX, -dot / 2),
+        content: stationDotHtml(dot),
+        offset: new AMap.Pixel(-dot / 2, -dot / 2),
         title: s.name,
-        // 站名标签层级高于车辆气泡/簇徽章（100），目标站最高，避免站名被车盖住
-        zIndex: isTarget ? 300 : 200,
+        anchor: "top-left",
+        zIndex: 200,
       });
-      map.add(marker);
-      stationMarkers.push(marker);
+      map.add(dotMarker);
+      stationMarkers.push(dotMarker);
+      if (!placement) return;
+      const labelWidth = estimateLabelWidth(s.name);
+      const cx = (placement.box.x0 + placement.box.x1) / 2;
+      const cy = (placement.box.y0 + placement.box.y1) / 2;
+      const lp = map.containerToLngLat(new AMap.Pixel(cx, cy));
+      // 标签被顶到线上方/下方时加引线连到自己的圆点；引线 2px #6B7280 不透明度
+      // 0.9——之前 1px #9CA3AF 0.55 在浅色底图上肉眼基本看不见
+      if (placement.dy !== 0) {
+        const leader = new AMap.Polyline({
+          path: [pos, [lp.lng, lp.lat]],
+          strokeColor: "#6B7280",
+          strokeWeight: 2,
+          strokeOpacity: 0.9,
+        });
+        map.add(leader);
+        leaderOverlays.push(leader);
+      }
+      const labelMarker = new AMap.Marker({
+        position: [lp.lng, lp.lat],
+        content: stationLabelHtml(s.name, isTarget),
+        offset: new AMap.Pixel(-Math.round(labelWidth / 2), -LABEL_HALF_H),
+        title: s.name,
+        anchor: "top-left",
+        zIndex: isTarget ? 500 : 400,
+      });
+      map.add(labelMarker);
+      stationMarkers.push(labelMarker);
     };
     for (const item of candidates) {
-      const { s, pos, isTarget } = item;
+      const { s, pos, isTarget, anchor } = item;
       const dot = isTarget ? 16 : 10;
       const labelWidth = estimateLabelWidth(s.name);
-      const anchor = map.lngLatToContainer(new AMap.LngLat(pos[0], pos[1]));
-      // 标签优先、车辆让路：防撞只看已保留的标签盒，不再把车辆标记当障碍物；
-      // 与标签重叠的车辆标记由 renderBusMarkers 跳过，标签本身永远保留。
-      const placement = placeLabel(anchor, dot, labelWidth, keptBoxes, container);
-      if (placement) {
-        keptBoxes.push(placement.box);
-        // 标签被顶到线上方/下方时加引线连到自己的圆点，保证一眼认得出对应关系
-        if (placement.dy !== 0) {
-          const cx = (placement.box.x0 + placement.box.x1) / 2;
-          const cy = (placement.box.y0 + placement.box.y1) / 2;
-          const lp = map.containerToLngLat(new AMap.Pixel(cx, cy));
-          const leader = new AMap.Polyline({
-            path: [pos, [lp.lng, lp.lat]],
-            strokeColor: "#9CA3AF",
-            strokeWeight: 1,
-            strokeOpacity: 0.55,
-          });
-          map.add(leader);
-          leaderOverlays.push(leader);
-        }
-      }
+      // 标签优先、车辆让路：防撞看已保留的标签盒 + 目标站圆点盒，不再把车辆标记
+      // 当障碍物；与标签重叠的车辆标记由 renderBusMarkers 跳过，标签本身永远保留。
+      const placement = placeLabel(
+        anchor,
+        dot,
+        labelWidth,
+        targetDotBox ? [...keptBoxes, targetDotBox] : keptBoxes,
+        container,
+      );
+      if (placement) keptBoxes.push(placement.box);
       drawStation(item, placement);
     }
     for (const item of dotsOnly) drawStation(item, null);
@@ -334,7 +362,7 @@ export async function createBusMap(el, { routes }) {
       position: pos,
       content,
       offset: new AMap.Pixel(offset[0], offset[1]),
-      // 车辆气泡层级低于站名标签（200/300），密集处不盖站名
+      // 车辆气泡层级低于站名标签（400/500），密集处不盖站名
       zIndex: 100,
     });
     map.add(marker);
