@@ -54,7 +54,7 @@ const lineNo = params.get("n") || "线路";
   <script>
     import { esc, hhmm, getJSON } from "../scripts/util.js";
     import { isFavLine, toggleLine } from "../scripts/favs.js";
-    import { nearestBus, nextBus, plateTail, getTrackedTrip, setTrackedTrip } from "../scripts/watch.js";
+    import { nearestBus, nextBus, plateTail, pickInitialStation, getTrackedTrip, setTrackedTrip } from "../scripts/watch.js";
     import { loadAmap, createBusMap } from "../scripts/amap.js";
 
     const qp = new URLSearchParams(location.search);
@@ -263,15 +263,17 @@ const lineNo = params.get("n") || "线路";
     }
 
     // 线路数据缓存：60 秒内先画缓存主体，再后台刷新（重复打开不再看骨架）
+    // 缓存键不含 stationId：直接打开时站还没定，键里带站会导致重复打开永远 miss；
+    // 目标站的 ETA 只在 60 秒缓存内短暂沿用，拿到新鲜数据后立即纠正。
     const LINE_CACHE = "cl-line-v1";
 
     function lineCacheKey() {
-      return `${currentLineId}|${currentDir}|${stationId}`;
+      return `${currentLineId}|${currentDir}`;
     }
 
     function readLineCache() {
       try {
-        const c = JSON.parse(sessionStorage.getItem(LINE_CACHE) || "{}");
+        const c = JSON.parse(localStorage.getItem(LINE_CACHE) || "{}");
         const hit = c[lineCacheKey()];
         if (hit && Date.now() - hit.t < 60_000) return hit.data;
       } catch {
@@ -282,27 +284,63 @@ const lineNo = params.get("n") || "线路";
 
     function writeLineCache(data) {
       try {
-        const c = JSON.parse(sessionStorage.getItem(LINE_CACHE) || "{}");
+        const c = JSON.parse(localStorage.getItem(LINE_CACHE) || "{}");
         c[lineCacheKey()] = { t: Date.now(), data };
-        sessionStorage.setItem(LINE_CACHE, JSON.stringify(c));
+        localStorage.setItem(LINE_CACHE, JSON.stringify(c));
       } catch {
         /* ignore */
       }
     }
 
+    /** 直接打开未带站时定默认上车站（第 1 站或按名匹配），写回 URL；返回定到的站，没定到返回 null */
+    function applyInitialStation(data) {
+      if (stationId || stationResolved) return null;
+      const station = pickInitialStation(data.stations, { stationId, stationName });
+      if (!station) return null;
+      stationResolved = true;
+      stationId = station.sId;
+      const qq = new URLSearchParams(location.search);
+      qq.set("stationId", stationId);
+      qq.set("st", station.name);
+      history.replaceState(null, "", `${location.pathname}?${qq.toString()}`);
+      els.trackBar.hidden = false;
+      paintTrackBtn();
+      return station;
+    }
+
+    /** 把一份数据的目标站强行改成指定站（缓存首绘用：缓存里的 targetOrder 可能是旧目标站） */
+    function withTarget(data, station) {
+      if (!station) return data;
+      return {
+        ...data,
+        line: { ...data.line, targetOrder: station.order, targetName: station.name, targetMatched: true },
+      };
+    }
+
+    async function fetchLineData() {
+      const q = new URLSearchParams({ lineId: currentLineId, dir: currentDir, cityId, stationId });
+      return getJSON(`/api/line?${q}`);
+    }
+
     async function load() {
       const cached = readLineCache();
-      if (cached) render(cached);
+      if (cached) {
+        // 缓存首绘：先定默认站再画，避免先闪一下终点站
+        const station = applyInitialStation(cached);
+        render(station ? withTarget(cached, station) : cached);
+      }
       try {
-        const q = new URLSearchParams({ lineId: currentLineId, dir: currentDir, cityId, stationId });
-        const data = await getJSON(`/api/line?${q}`);
-        // 上车站兜底：URL 没带站，或带的站不在本方向时，尽量落到一个有效站
-        // （直接打开无 stationId 时上游默认给终点站；sId 对不上时按站名再找一次）
-        if (!data.line.targetMatched && data.stations?.length && !stationResolved) {
+        let data = await fetchLineData();
+        // URL 没带站：忽略上游默认的终点站目标，用第 1 站重查一次（ETA 按第 1 站算）
+        const station = applyInitialStation(data);
+        if (station) {
+          data = await fetchLineData();
+        } else if (!data.line.targetMatched && data.stations?.length && !stationResolved) {
+          // URL 带了站但该站不在本方向：按站名再找一次
           stationResolved = true;
-          let fallback = null;
-          if (stationName) fallback = data.stations.find((s) => s.name === stationName) || null;
-          if (!fallback && !stationId) fallback = data.stations[0];
+          const fallback = stationName
+            ? data.stations.find((s) => s.name === stationName) || null
+            : null;
           if (fallback) {
             stationId = fallback.sId;
             const qq = new URLSearchParams(location.search);
@@ -311,8 +349,7 @@ const lineNo = params.get("n") || "线路";
             history.replaceState(null, "", `${location.pathname}?${qq.toString()}`);
             els.trackBar.hidden = false;
             paintTrackBtn();
-            load();
-            return;
+            data = await fetchLineData();
           }
         }
         render(data);
@@ -331,6 +368,7 @@ const lineNo = params.get("n") || "线路";
     els.switchDir.addEventListener("click", () => {
       currentDir = currentDir === "1" ? "0" : "1";
       currentLineId = flipLineId(currentLineId);
+      stationResolved = false; // 换向后允许按站名再兜底一次（原站可能不在新方向）
       const q = new URLSearchParams(location.search);
       q.set("dir", currentDir);
       q.set("lineId", currentLineId);

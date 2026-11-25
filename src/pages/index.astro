@@ -111,7 +111,7 @@ import Base from "../layouts/Base.astro";
 
     function readEtaCache(id) {
       try {
-        const c = JSON.parse(sessionStorage.getItem(ETA_CACHE) || "{}");
+        const c = JSON.parse(localStorage.getItem(ETA_CACHE) || "{}");
         const hit = c[id];
         if (hit && Date.now() - hit.t < 25_000) return hit.eta;
       } catch {
@@ -122,9 +122,9 @@ import Base from "../layouts/Base.astro";
 
     function writeEtaCache(id, eta) {
       try {
-        const c = JSON.parse(sessionStorage.getItem(ETA_CACHE) || "{}");
+        const c = JSON.parse(localStorage.getItem(ETA_CACHE) || "{}");
         c[id] = { t: Date.now(), eta };
-        sessionStorage.setItem(ETA_CACHE, JSON.stringify(c));
+        localStorage.setItem(ETA_CACHE, JSON.stringify(c));
       } catch {
         /* ignore */
       }
@@ -464,6 +464,8 @@ import Base from "../layouts/Base.astro";
     }
 
     // ── 我的盯梢：缓存（60 秒内直接画缓存，再后台刷新）──
+    // 用 localStorage 而不用 sessionStorage：sessionStorage 只活在一个标签页里，
+    // 从书签/主屏幕/新标签重复打开时缓存永远是空的，60 秒缓存等于没生效。
     const WATCH_CACHE = "cl-watch-v1";
 
     function watchCacheKey(t) {
@@ -472,7 +474,7 @@ import Base from "../layouts/Base.astro";
 
     function readWatchCache(t) {
       try {
-        const c = JSON.parse(sessionStorage.getItem(WATCH_CACHE) || "{}");
+        const c = JSON.parse(localStorage.getItem(WATCH_CACHE) || "{}");
         const hit = c[watchCacheKey(t)];
         if (hit && Date.now() - hit.t < 60_000) return hit.data;
       } catch {
@@ -483,9 +485,9 @@ import Base from "../layouts/Base.astro";
 
     function writeWatchCache(t, data) {
       try {
-        const c = JSON.parse(sessionStorage.getItem(WATCH_CACHE) || "{}");
+        const c = JSON.parse(localStorage.getItem(WATCH_CACHE) || "{}");
         c[watchCacheKey(t)] = { t: Date.now(), data };
-        sessionStorage.setItem(WATCH_CACHE, JSON.stringify(c));
+        localStorage.setItem(WATCH_CACHE, JSON.stringify(c));
       } catch {
         /* ignore */
       }

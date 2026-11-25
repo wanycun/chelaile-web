@@ -113,6 +113,27 @@ export function plateTail(plate) {
   return p.length >= 4 ? p.slice(-4) : p;
 }
 
+/**
+ * 直接打开线路页时的默认上车站（修「默认终点站」）：
+ * URL 没带 stationId 时不要理会上游给的 targetOrder——上游无站时会默认给
+ * 终点站且 targetMatched=true，兜底根本不走。规则：
+ * - 带了 stationId：用所带站（在本方向返回该站，不在返回 null 走按名兜底）
+ * - 没带站但带了站名 st：按站名找，找不到再默认第 1 站
+ * - 都没带：默认该方向第 1 站（按 order 排序后的首站）
+ */
+export function pickInitialStation(stations, { stationId = "", stationName = "" } = {}) {
+  const sorted = [...(stations || [])]
+    .filter((s) => s && s.sId)
+    .sort((a, b) => a.order - b.order);
+  if (!sorted.length) return null;
+  if (stationId) return sorted.find((s) => s.sId === stationId) || null;
+  if (stationName) {
+    const byName = sorted.find((s) => s.name === stationName);
+    if (byName) return byName;
+  }
+  return sorted[0];
+}
+
 // ── 追踪行程（线路页「追踪这班车」→ 首页顶部横幅），存本机 ──
 const TRACK_KEY = "cl-track-v1";
 export function getTrackedTrip() {

@@ -636,8 +636,7 @@ select.station-pill:focus { outline: 2px solid var(--brand); outline-offset: 1px
   text-align: center;
 }
 
-/* 地图低缩放时只显示站点圆点，隐藏站名（由 amap.js 按缩放切换 zoom-low） */
-.map-box.zoom-low .st-label { display: none; }
+/* 站名显隐由 amap.js 在生成标记时按缩放决定（见 shouldShowStationLabel），不再用 CSS 隐藏 */
 
 /* ── 线路页走向条 ── */
 .route {
