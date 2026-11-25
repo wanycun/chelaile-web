@@ -57,6 +57,12 @@ import Base from "../layouts/Base.astro";
 
     <p class="msg" id="msg"></p>
 
+    <section class="city-search" id="city-search" hidden>
+      <div class="sec-title"><span>全城搜索</span></div>
+      <div class="list" id="city-list"></div>
+      <p class="msg" id="city-msg"></p>
+    </section>
+
     <p class="foot">
       数据来自车来了 H5 接口 · 每 30 秒自动刷新<br />
       点站点名看该站全部线路，点线路看沿途站点 · 收藏与追踪只存在本机
@@ -64,7 +70,7 @@ import Base from "../layouts/Base.astro";
   </main>
 
   <script>
-    import { esc, hhmm, fmtDist, lineRow, stationHref, getJSON } from "../scripts/util.js";
+    import { esc, hhmm, fmtDist, lineRow, lineHref, stationHref, getJSON } from "../scripts/util.js";
     import { getFavs, isFavStation, toggleStation, toggleLine, onFavChange } from "../scripts/favs.js";
     import {
       CITY, watchGroup, watchTargets, fetchWatchLine, nearestBus, nextBus, plateTail,
@@ -83,6 +89,9 @@ import Base from "../layouts/Base.astro";
       favsRow: document.getElementById("favs-row"),
       search: document.getElementById("search"),
       searchBtn: document.getElementById("search-btn"),
+      citySearch: document.getElementById("city-search"),
+      cityList: document.getElementById("city-list"),
+      cityMsg: document.getElementById("city-msg"),
       watchGrid: document.getElementById("watch-grid"),
       watchNote: document.getElementById("watch-note"),
       watchMap: document.getElementById("watch-map"),
@@ -312,6 +321,9 @@ import Base from "../layouts/Base.astro";
       if (!q) {
         renderList(nearbyData.stations || []);
         els.msg.textContent = "";
+        els.citySearch.hidden = true;
+        els.cityList.innerHTML = "";
+        els.cityMsg.textContent = "";
         return;
       }
       const hit = (nearbyData.stations || [])
@@ -332,8 +344,55 @@ import Base from "../layouts/Base.astro";
 
     function runSearch() {
       applySearch();
+      loadCitySearch(els.search.value);
       els.search.blur();
       els.list.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    // 全城搜索：只在点「搜索」/回车时调一次上游，不随输入逐字调。
+    // 附近搜不到的线路（如 B20）在这里出现，点进行线路页/站点页。
+    let citySearchSeq = 0;
+    async function loadCitySearch(q) {
+      const query = (q || "").trim();
+      if (!query) {
+        els.citySearch.hidden = true;
+        els.cityList.innerHTML = "";
+        els.cityMsg.textContent = "";
+        return;
+      }
+      const seq = ++citySearchSeq;
+      els.citySearch.hidden = false;
+      els.cityList.innerHTML = `<div class="skeleton"></div>`;
+      els.cityMsg.textContent = "";
+      try {
+        const data = await getJSON(`/api/search?cityId=${CITY}&q=${encodeURIComponent(query)}`);
+        if (seq !== citySearchSeq) return;
+        const lines = (data.lines || [])
+          .map(
+            (l) => `<div class="line-wrap"><a class="line" href="${lineHref(l, null, CITY)}">
+              <span class="badge">${esc(l.no)}</span>
+              <span class="dir"><span class="to">${esc(l.from)} → ${esc(l.to)}</span>
+              <span class="meta">全城线路 · 点进看沿途站点</span></span>
+            </a></div>`,
+          )
+          .join("");
+        const stations = (data.stations || [])
+          .map(
+            (s) => `<div class="line-wrap"><a class="line" href="${stationHref(s, CITY)}">
+              <span class="badge">站</span>
+              <span class="dir"><span class="to">${esc(s.name)}</span>
+              <span class="meta">全城站点 · 点进看全部线路</span></span>
+            </a></div>`,
+          )
+          .join("");
+        els.cityList.innerHTML = lines + stations;
+        els.cityMsg.textContent =
+          lines || stations ? "" : "全城也没有匹配的线路或站点";
+      } catch {
+        if (seq !== citySearchSeq) return;
+        els.cityList.innerHTML = "";
+        els.cityMsg.textContent = "全城搜索暂不可用，稍后再试";
+      }
     }
 
     function bindButtons() {      els.list.querySelectorAll("[data-fav-station]").forEach((btn) => {

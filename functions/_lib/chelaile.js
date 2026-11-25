@@ -152,7 +152,47 @@ export async function fetchNearby({ cityId = "040", lat, lng, limit = 8 }) {
   };
 }
 
-/** 单个站点详情（站点页） */
+/** 全城搜索（首页搜索的后备）：按关键字搜全城线路 + 站点。
+ * 上游 /bus/query!nSearch.action，实测 2026-11-25 可用（B20 → 两方向 lineId）。
+ * 只读低频：前端只在点「搜索」/回车时调一次，不随输入逐字调。 */
+export async function fetchSearch({ cityId = "040", q }) {
+  const query = String(q || "").trim();
+  if (!query) return { cityId, q: "", lines: [], stations: [] };
+  const raw = await request("/bus/query!nSearch.action", {
+    ...DEFAULT_PARAMS,
+    cityId,
+    localCityId: cityId,
+    key: query,
+    supportPhyStn: "true",
+  });
+  const r = raw?.result || {};
+  const lines = (Array.isArray(r.lines) ? r.lines : [])
+    .map((l) => ({
+      no: String(l.name || l.lineNo || "").replace(/^0+/, ""),
+      lineId: l.lineId || "",
+      dir: l.direction ?? 0,
+      from: l.startSn || "",
+      to: l.endSn || "",
+      subway: l.subwayV2 === 1,
+    }))
+    .filter((l) => l.no && l.lineId)
+    .slice(0, 8);
+  const stations = (Array.isArray(r.stations) ? r.stations : [])
+    .map((s) => ({
+      sId: s.sId || "",
+      name: s.sn || "",
+      physicalStId: s.physicalStId || "",
+      namesakeStId: s.namesakeStId || "",
+      firstLineId: "",
+      lat: typeof s.lat === "number" ? s.lat : null,
+      lng: typeof s.lng === "number" ? s.lng : null,
+      subway: s.subwayV2 === 1,
+    }))
+    .filter((s) => s.name)
+    .slice(0, 8);
+  return { cityId, q: query, lines, stations };
+}
+
 export async function fetchStation({
   cityId = "040",
   physicalStId,
