@@ -54,7 +54,7 @@ function gcj(lng, lat) {
 }
 
 const BUS_CLUSTER_DIST = 0.004; // 约 400m 内算同一簇
-const BUS_LABEL_ZOOM = 16; // ≥16 才逐辆显示时速标签
+const BUS_LABEL_ZOOM = 14; // ≥14 逐辆显示时速 pill；<14 车辆只画小绿点/小徽章，站名优先
 const ST_LABEL_ZOOM = 15; // ≥15 全部站名
 const ST_LABEL_SPARSE_ZOOM = 10; // 10–14 只显示目标站 + 起讫 + 每 4 站；<10 只留圆点
 const SPIDER_EVERY = 4; // 稀疏站名每 4 站一个
@@ -112,9 +112,9 @@ const LABEL_HALF_H = 12;
 /**
  * 给站名标签选落点（纯函数，可单测）：
  * 依次试 右 / 左 / 右上 / 左上 / 右下 / 左下，落点盒须在容器内且不与 obstacles（已保留的
- * 标签盒 + 车辆标记盒）重叠；全部失败返回 null（只留圆点，站名靠 hover 的 title 看）。
- * zIndex 只能解决「标签 vs 车辆」的层叠，解决不了「标签 vs 标签」互压（B1 默认缩放约 11
- * 时站间距仅约 12px，标签 70–90px 宽，每 4 站一个仍会互压），所以必须做防撞。
+ * 标签盒）重叠；全部失败返回 null（只留圆点，站名靠 hover 的 title 看）。
+ * 标签优先、车辆让路：obstacles 里只有标签盒，不再把车辆标记当障碍物——与标签重叠的
+ * 车辆标记由 renderBusMarkers 直接跳过，不许再把标签顶成圆点。
  */
 export function placeLabel(anchor, dot, labelWidth, obstacles, size) {
   const tries = [
@@ -144,7 +144,8 @@ export function placeLabel(anchor, dot, labelWidth, obstacles, size) {
  * 在 el 里建一张公交地图。
  * routes: [{ stations: [{name, order, lat, lng}], buses: [{lat, lng, speed, plate, order}], targetOrder }]
  * 站点连线 + 站点标记（圆点；站名按缩放显示：≥15 全显，10–14 稀疏显示，<10 只留圆点）+
- * 车辆标记（低缩放聚合，高缩放逐辆；坐标重合的车点簇后环形散开 spiderfy）。
+ * 车辆标记（<14 只画小绿点/小徽章，≥14 逐辆显示时速 pill；坐标重合的车点簇后环形散开 spiderfy）。
+ * 标签优先、车辆让路：站名标签防撞只看标签盒，撞标签的车辆标记直接不画；错开的标签带引线连回圆点。
  * 定 bounds 只按站点连线，不含车辆标记；updateBuses() 原地刷新标记，不动视野。
  * 返回 { map, updateBuses(routes), destroy() }。
  */
@@ -154,6 +155,8 @@ export async function createBusMap(el, { routes }) {
   const polylineOverlays = [];
   let stationMarkers = [];
   let busMarkers = [];
+  let labelBoxes = []; // 本轮已保留的站名标签盒（屏幕坐标），供车辆标记让路用
+  let leaderOverlays = []; // 错开标签的引线
   let currentRoutes = routes || [];
   let expandedClusterKey = null; // 正在环形散开的簇（key = 簇中心经纬度），缩放/刷新后收起
 
@@ -181,62 +184,26 @@ export async function createBusMap(el, { routes }) {
     }
   }
 
-  /** 车辆标记在屏幕上的包围盒（供站名防撞用；落点逻辑与 renderBusMarkers 保持一致） */
-  function computeBusBoxes() {
-    const boxes = [];
-    const zoom = map.getZoom();
-    const toPx = (lngLat) => map.lngLatToContainer(new AMap.LngLat(lngLat[0], lngLat[1]));
-    for (const route of currentRoutes) {
-      const buses = (route.buses || [])
-        .map((b) => ({ ...b, pos: gcj(b.lng, b.lat) }))
-        .filter((b) => b.pos);
-      if (zoom >= BUS_LABEL_ZOOM) {
-        const groups = [];
-        for (const b of buses) {
-          const g = groups.find((g) => sameSpot([g.pos, b.pos]));
-          if (g) g.items.push(b);
-          else groups.push({ pos: b.pos, items: [b] });
-        }
-        for (const g of groups) {
-          const c = toPx(g.pos);
-          if (g.items.length === 1) {
-            // 单辆车：白底时速 pill，约 90×28（offset [-14,-13]）
-            boxes.push({ x0: c.x - 14, x1: c.x + 76, y0: c.y - 13, y1: c.y + 15 });
-          } else {
-            // 环形散开：34px 半径的环 + pill，按 120×120 的方框算
-            boxes.push({ x0: c.x - 60, x1: c.x + 60, y0: c.y - 60, y1: c.y + 60 });
-          }
-        }
-        continue;
-      }
-      for (const c of clusterBuses(buses)) {
-        const p = toPx([c.lng, c.lat]);
-        if (c.items.length === 1) {
-          // 单辆车：26px 绿圆点（offset [-13,-13]）
-          boxes.push({ x0: p.x - 13, x1: p.x + 13, y0: p.y - 13, y1: p.y + 13 });
-        } else {
-          const key = `${c.lng.toFixed(5)},${c.lat.toFixed(5)}`;
-          const coincident = sameSpot(c.items.map((b) => b.pos));
-          if (coincident && expandedClusterKey === key) {
-            boxes.push({ x0: p.x - 60, x1: p.x + 60, y0: p.y - 60, y1: p.y + 60 });
-          } else {
-            // 簇徽章 🚌×N，约 55×28（offset [-20,-13]）
-            boxes.push({ x0: p.x - 20, x1: p.x + 35, y0: p.y - 13, y1: p.y + 15 });
-          }
-        }
-      }
-    }
-    return boxes;
+  /** 车辆标记的屏幕包围盒：内容宽高 + offset（与 addBusMarker 的落点一致） */
+  function markerBox(p, w, h, ox, oy) {
+    return { x0: p.x + ox, x1: p.x + ox + w, y0: p.y + oy, y1: p.y + oy + h };
   }
 
-  const stationDotHtml = (dot, isTarget, isEnd) =>
-    `<span style="flex:none;width:${dot}px;height:${dot}px;border-radius:50%;background:${isTarget || isEnd ? "#1B5BFF" : "#fff"};border:2.5px solid #1B5BFF;box-shadow:0 1px 4px rgba(0,0,0,.3)"></span>`;
+  /** 车辆标记是否撞上站名标签：标签优先，车辆让路，撞上的车辆标记不画 */
+  function blockedByLabel(box) {
+    return labelBoxes.some((l) => boxesOverlap(box, l));
+  }
+
+  const stationDotHtml = (dot) =>
+    `<span style="flex:none;width:${dot}px;height:${dot}px;border-radius:50%;background:#1B5BFF;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.35)"></span>`;
 
   const stationLabelHtml = (name, isTarget, dy) =>
     `<span class="st-label" style="background:rgba(255,255,255,.94);border:1px solid #d1d5db;border-radius:6px;padding:2px 7px;font-size:11.5px;font-weight:${isTarget ? 800 : 600};color:${isTarget ? "#1D4ED8" : "#374151"};white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.15);transform:translateY(${dy - 4}px)">${esc(name)}</span>`;
 
   function renderStationMarkers() {
     removeMarkers(stationMarkers);
+    for (const o of leaderOverlays) map.remove(o);
+    leaderOverlays.length = 0;
     const zoom = map.getZoom();
     const size = map.getSize();
     const container = { width: size.width, height: size.height };
@@ -270,14 +237,13 @@ export async function createBusMap(el, { routes }) {
       (a, b) =>
         (a.isTarget ? 0 : a.isEnd ? 1 : 2) - (b.isTarget ? 0 : b.isEnd ? 1 : 2) || a.order - b.order,
     );
-    const busBoxes = computeBusBoxes();
     const keptBoxes = [];
     const drawStation = (item, placement) => {
-      const { s, pos, isTarget, isEnd } = item;
-      const dot = isTarget ? 16 : 11;
+      const { s, pos, isTarget } = item;
+      const dot = isTarget ? 16 : 10;
       const labelWidth = estimateLabelWidth(s.name);
       const label = placement ? stationLabelHtml(s.name, isTarget, placement.dy) : "";
-      const dotHtml = stationDotHtml(dot, isTarget, isEnd);
+      const dotHtml = stationDotHtml(dot);
       // 标签在圆点左侧时内容顺序调换，并把 offset 左移一个标签宽，保证圆点仍落在站位上
       const content =
         placement && placement.side === "left"
@@ -298,14 +264,33 @@ export async function createBusMap(el, { routes }) {
     };
     for (const item of candidates) {
       const { s, pos, isTarget } = item;
-      const dot = isTarget ? 16 : 11;
+      const dot = isTarget ? 16 : 10;
       const labelWidth = estimateLabelWidth(s.name);
       const anchor = map.lngLatToContainer(new AMap.LngLat(pos[0], pos[1]));
-      const placement = placeLabel(anchor, dot, labelWidth, [...keptBoxes, ...busBoxes], container);
-      if (placement) keptBoxes.push(placement.box);
+      // 标签优先、车辆让路：防撞只看已保留的标签盒，不再把车辆标记当障碍物；
+      // 与标签重叠的车辆标记由 renderBusMarkers 跳过，标签本身永远保留。
+      const placement = placeLabel(anchor, dot, labelWidth, keptBoxes, container);
+      if (placement) {
+        keptBoxes.push(placement.box);
+        // 标签被顶到线上方/下方时加引线连到自己的圆点，保证一眼认得出对应关系
+        if (placement.dy !== 0) {
+          const cx = (placement.box.x0 + placement.box.x1) / 2;
+          const cy = (placement.box.y0 + placement.box.y1) / 2;
+          const lp = map.containerToLngLat(new AMap.Pixel(cx, cy));
+          const leader = new AMap.Polyline({
+            path: [pos, [lp.lng, lp.lat]],
+            strokeColor: "#9CA3AF",
+            strokeWeight: 1,
+            strokeOpacity: 0.55,
+          });
+          map.add(leader);
+          leaderOverlays.push(leader);
+        }
+      }
       drawStation(item, placement);
     }
     for (const item of dotsOnly) drawStation(item, null);
+    labelBoxes = keptBoxes;
   }
 
   /** 距离很近的车合成一簇（中心取第一辆车的位置） */
@@ -329,12 +314,19 @@ export async function createBusMap(el, { routes }) {
     return `<div style="display:flex;align-items:center;gap:3px;background:#fff;border:1.5px solid #0EA95B;color:#15803D;border-radius:999px;padding:3px 8px;font-size:12px;font-weight:700;box-shadow:0 2px 8px rgba(0,0,0,.18);white-space:nowrap">🚌${label ? `<span>${esc(label)}</span>` : ""}</div>`;
   }
 
-  function singleBusContent() {
-    return `<div style="display:flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:50%;background:#0EA95B;color:#fff;font-size:13px;box-shadow:0 2px 8px rgba(0,0,0,.25)">🚌</div>`;
+  /** 低缩放单辆车：10px 小绿点（站名优先，车辆细节放大再看） */
+  function smallBusDotContent() {
+    return `<div style="width:10px;height:10px;border-radius:50%;background:#0EA95B;border:1.5px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.3)"></div>`;
   }
 
-  function clusterContent(n) {
-    return `<div style="display:flex;align-items:center;gap:2px;background:#0EA95B;color:#fff;border-radius:999px;padding:4px 10px;font-size:12.5px;font-weight:800;box-shadow:0 2px 8px rgba(0,0,0,.25);white-space:nowrap">🚌×${n}</div>`;
+  /** 低缩放簇徽章宽度估算（px）：🚌 约 10px + "×N" 约 7px/字 + 内边距 12px */
+  function smallClusterWidth(n) {
+    return 22 + 7 * String(n).length;
+  }
+
+  /** 低缩放簇徽章：小尺寸 🚌×N */
+  function smallClusterContent(n) {
+    return `<div style="display:flex;align-items:center;gap:1px;background:#0EA95B;color:#fff;border-radius:999px;padding:2px 6px;font-size:10px;font-weight:800;box-shadow:0 1px 4px rgba(0,0,0,.25);white-space:nowrap">🚌×${n}</div>`;
   }
 
   function addBusMarker(pos, content, offset = [-14, -13]) {
@@ -377,16 +369,25 @@ export async function createBusMap(el, { routes }) {
     });
   }
 
-  /** 把重合的几辆车环形散开显示（spiderfy），每辆带车牌尾号/时速以区分 */
+  /** 把重合的几辆车环形散开显示（spiderfy），每辆带车牌尾号/时速以区分；
+   * 撞上站名标签的 pill/锚点直接让路不画（标签优先） */
   function renderSpiderfied(center, items) {
     const ring = spiderPositions(center, items.length);
-    addCenterDot(center);
-    items.forEach((b, i) => addBusMarker(ring[i], busMarkerContent(b)));
+    const cc = map.lngLatToContainer(new AMap.LngLat(center[0], center[1]));
+    if (!blockedByLabel(markerBox(cc, 12, 12, -6, -6))) addCenterDot(center);
+    items.forEach((b, i) => {
+      const c = map.lngLatToContainer(new AMap.LngLat(ring[i][0], ring[i][1]));
+      if (!blockedByLabel(markerBox(c, 90, 28, -14, -13))) {
+        addBusMarker(ring[i], busMarkerContent(b));
+      }
+    });
   }
 
   function renderBusMarkers() {
     removeMarkers(busMarkers);
-    const detailed = map.getZoom() >= BUS_LABEL_ZOOM;
+    const zoom = map.getZoom();
+    const detailed = zoom >= BUS_LABEL_ZOOM; // ≥14 逐辆显示时速 pill
+    const toPx = (pos) => map.lngLatToContainer(new AMap.LngLat(pos[0], pos[1]));
     for (const route of currentRoutes) {
       const buses = (route.buses || [])
         .map((b) => ({ ...b, pos: gcj(b.lng, b.lat) }))
@@ -400,14 +401,24 @@ export async function createBusMap(el, { routes }) {
           else groups.push({ pos: b.pos, items: [b] });
         }
         for (const g of groups) {
-          if (g.items.length === 1) addBusMarker(g.pos, busMarkerContent(g.items[0]));
-          else renderSpiderfied(g.pos, g.items);
+          if (g.items.length === 1) {
+            const c = toPx(g.pos);
+            if (!blockedByLabel(markerBox(c, 90, 28, -14, -13))) {
+              addBusMarker(g.pos, busMarkerContent(g.items[0]));
+            }
+          } else {
+            renderSpiderfied(g.pos, g.items);
+          }
         }
         continue;
       }
+      // 低缩放（<14）：车辆只画小绿点 / 小徽章，站名优先，撞标签的车辆标记直接让路不画
       for (const c of clusterBuses(buses)) {
+        const p = toPx([c.lng, c.lat]);
         if (c.items.length === 1) {
-          addBusMarker([c.lng, c.lat], singleBusContent(), [-13, -13]);
+          if (!blockedByLabel(markerBox(p, 10, 10, -5, -5))) {
+            addBusMarker([c.lng, c.lat], smallBusDotContent(), [-5, -5]);
+          }
         } else {
           const key = `${c.lng.toFixed(5)},${c.lat.toFixed(5)}`;
           const coincident = sameSpot(c.items.map((b) => b.pos));
@@ -415,16 +426,23 @@ export async function createBusMap(el, { routes }) {
             // 已展开：环形散开显示各车（点中心绿点收起）
             renderSpiderfied([c.lng, c.lat], c.items);
           } else {
-            const marker = addBusMarker([c.lng, c.lat], clusterContent(c.items.length), [-20, -13]);
-            marker.on("click", () => {
-              if (coincident) {
-                // 坐标重合：放大也分不开，改环形散开；缩放或刷新后自动收起
-                expandedClusterKey = key;
-                renderBusMarkers();
-              } else {
-                map.setZoomAndCenter(Math.min(map.getZoom() + 2, 18), [c.lng, c.lat]);
-              }
-            });
+            const w = smallClusterWidth(c.items.length);
+            if (!blockedByLabel(markerBox(p, w, 20, -Math.round(w / 2), -10))) {
+              const marker = addBusMarker(
+                [c.lng, c.lat],
+                smallClusterContent(c.items.length),
+                [-Math.round(w / 2), -10],
+              );
+              marker.on("click", () => {
+                if (coincident) {
+                  // 坐标重合：放大也分不开，改环形散开；缩放或刷新后自动收起
+                  expandedClusterKey = key;
+                  renderBusMarkers();
+                } else {
+                  map.setZoomAndCenter(Math.min(map.getZoom() + 2, 18), [c.lng, c.lat]);
+                }
+              });
+            }
           }
         }
       }
