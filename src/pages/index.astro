@@ -306,7 +306,9 @@ import Base from "../layouts/Base.astro";
 
     function applySearch() {
       if (!nearbyData) return;
-      const q = els.search.value.trim();
+      // 大小写不敏感：用户手机键盘常打出小写 b1，线路号是大写 B1，
+      // 不折小写就搜不到，显示“没有匹配”——截图实证。
+      const q = els.search.value.trim().toLowerCase();
       if (!q) {
         renderList(nearbyData.stations || []);
         els.msg.textContent = "";
@@ -316,10 +318,10 @@ import Base from "../layouts/Base.astro";
         .map((st) => {
           // 站名命中则整站保留；只命中线路时卡片里只留命中的线路，
           // 否则搜 B1 会整站留下、133/136/209 全在，看着像没过滤。
-          const nameHit = String(st.name || "").includes(q);
+          const nameHit = String(st.name || "").toLowerCase().includes(q);
           const lines = nameHit
             ? st.lines || []
-            : (st.lines || []).filter((l) => String(l.no || "").includes(q));
+            : (st.lines || []).filter((l) => String(l.no || "").toLowerCase().includes(q));
           return lines.length ? { ...st, lines } : null;
         })
         .filter(Boolean);
