@@ -26,6 +26,7 @@ import Base from "../layouts/Base.astro";
     <div class="search">
       <span class="search-ico">🔍</span>
       <input id="search" type="search" placeholder="搜线路、车站" autocomplete="off" />
+      <button class="search-btn" id="search-btn" type="button">搜索</button>
     </div>
 
     <section class="watch" id="watch">
@@ -81,6 +82,7 @@ import Base from "../layouts/Base.astro";
       favs: document.getElementById("favs"),
       favsRow: document.getElementById("favs-row"),
       search: document.getElementById("search"),
+      searchBtn: document.getElementById("search-btn"),
       watchGrid: document.getElementById("watch-grid"),
       watchNote: document.getElementById("watch-note"),
       watchMap: document.getElementById("watch-map"),
@@ -320,8 +322,13 @@ import Base from "../layouts/Base.astro";
       els.msg.className = "msg";
     }
 
-    function bindButtons() {
-      els.list.querySelectorAll("[data-fav-station]").forEach((btn) => {
+    function runSearch() {
+      applySearch();
+      els.search.blur();
+      els.list.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    function bindButtons() {      els.list.querySelectorAll("[data-fav-station]").forEach((btn) => {
         btn.addEventListener("click", (ev) => {
           ev.preventDefault();
           ev.stopPropagation();
@@ -677,6 +684,13 @@ import Base from "../layouts/Base.astro";
 
     els.refresh.addEventListener("click", () => load());
     els.search.addEventListener("input", applySearch);
+    els.searchBtn.addEventListener("click", runSearch);
+    els.search.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        runSearch();
+      }
+    });
     onFavChange(renderFavs);
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible") {
