@@ -312,11 +312,17 @@ import Base from "../layouts/Base.astro";
         els.msg.textContent = "";
         return;
       }
-      const hit = (nearbyData.stations || []).filter(
-        (st) =>
-          String(st.name || "").includes(q) ||
-          (st.lines || []).some((l) => String(l.no || "").includes(q)),
-      );
+      const hit = (nearbyData.stations || [])
+        .map((st) => {
+          // 站名命中则整站保留；只命中线路时卡片里只留命中的线路，
+          // 否则搜 B1 会整站留下、133/136/209 全在，看着像没过滤。
+          const nameHit = String(st.name || "").includes(q);
+          const lines = nameHit
+            ? st.lines || []
+            : (st.lines || []).filter((l) => String(l.no || "").includes(q));
+          return lines.length ? { ...st, lines } : null;
+        })
+        .filter(Boolean);
       renderList(hit);
       els.msg.textContent = hit.length ? "" : "没有匹配的站点或线路";
       els.msg.className = "msg";
