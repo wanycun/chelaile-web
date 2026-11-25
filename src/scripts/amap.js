@@ -156,13 +156,15 @@ export async function createBusMap(el, { routes }) {
         });
         const dot = isTarget ? 16 : 11;
         const label = showLabel
-          ? `<span class="st-label" style="background:rgba(255,255,255,.94);border:1px solid #d1d5db;border-radius:6px;padding:2px 7px;font-size:11.5px;font-weight:${isTarget ? 800 : 600};color:${isTarget ? "#1D4ED8" : "#374151"};white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.15)">${esc(s.name)}</span>`
+          ? `<span class="st-label" style="background:rgba(255,255,255,.94);border:1px solid #d1d5db;border-radius:6px;padding:2px 7px;font-size:11.5px;font-weight:${isTarget ? 800 : 600};color:${isTarget ? "#1D4ED8" : "#374151"};white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.15);transform:translateY(-4px)">${esc(s.name)}</span>`
           : "";
         const marker = new AMap.Marker({
           position: pos,
           content: `<div style="display:flex;align-items:center;gap:5px"><span style="flex:none;width:${dot}px;height:${dot}px;border-radius:50%;background:${isTarget || isEnd ? "#1B5BFF" : "#fff"};border:2.5px solid #1B5BFF;box-shadow:0 1px 4px rgba(0,0,0,.3)"></span>${label}</div>`,
           offset: new AMap.Pixel(-dot / 2, -dot / 2),
           title: s.name,
+          // 站名标签层级高于车辆气泡/簇徽章（100），目标站最高，避免站名被车盖住
+          zIndex: isTarget ? 300 : 200,
         });
         map.add(marker);
         stationMarkers.push(marker);
@@ -204,6 +206,8 @@ export async function createBusMap(el, { routes }) {
       position: pos,
       content,
       offset: new AMap.Pixel(offset[0], offset[1]),
+      // 车辆气泡层级低于站名标签（200/300），密集处不盖站名
+      zIndex: 100,
     });
     map.add(marker);
     busMarkers.push(marker);
@@ -216,6 +220,8 @@ export async function createBusMap(el, { routes }) {
       position: pos,
       content: `<div style="width:12px;height:12px;border-radius:50%;background:#0EA95B;border:2px solid #fff;box-shadow:0 1px 5px rgba(0,0,0,.35)"></div>`,
       offset: new AMap.Pixel(-6, -6),
+      // 散开锚点高于车辆气泡、低于站名标签
+      zIndex: 150,
     });
     marker.on("click", () => {
       expandedClusterKey = null;
