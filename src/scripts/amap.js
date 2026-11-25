@@ -92,6 +92,54 @@ export function spiderOffsets(n, r = SPIDER_R) {
   });
 }
 
+/** 站名标签宽度估算（px）：中文约 12px/字，ASCII 约 7px/字，+ 内边距与边框 16px（纯函数，可单测） */
+export function estimateLabelWidth(name) {
+  let w = 16;
+  for (const ch of String(name || "")) {
+    w += ch.charCodeAt(0) > 0xff ? 12 : 7;
+  }
+  return w;
+}
+
+/** 两个包围盒是否重叠（margin 为安全间距，纯函数，可单测） */
+export function boxesOverlap(a, b, margin = 2) {
+  return a.x0 < b.x1 + margin && a.x1 + margin > b.x0 && a.y0 < b.y1 + margin && a.y1 + margin > b.y0;
+}
+
+const LABEL_DY = 26; // 标签竖向交错的偏移量（px）；标签盒高约 24px，错开后上下互不重叠
+const LABEL_HALF_H = 12;
+
+/**
+ * 给站名标签选落点（纯函数，可单测）：
+ * 依次试 右 / 左 / 右上 / 左上 / 右下 / 左下，落点盒须在容器内且不与 obstacles（已保留的
+ * 标签盒 + 车辆标记盒）重叠；全部失败返回 null（只留圆点，站名靠 hover 的 title 看）。
+ * zIndex 只能解决「标签 vs 车辆」的层叠，解决不了「标签 vs 标签」互压（B1 默认缩放约 11
+ * 时站间距仅约 12px，标签 70–90px 宽，每 4 站一个仍会互压），所以必须做防撞。
+ */
+export function placeLabel(anchor, dot, labelWidth, obstacles, size) {
+  const tries = [
+    { side: "right", dy: 0 },
+    { side: "left", dy: 0 },
+    { side: "right", dy: -LABEL_DY },
+    { side: "left", dy: -LABEL_DY },
+    { side: "right", dy: LABEL_DY },
+    { side: "left", dy: LABEL_DY },
+  ];
+  for (const t of tries) {
+    const x0 = t.side === "right" ? anchor.x + dot / 2 + 5 : anchor.x - dot / 2 - 5 - labelWidth;
+    const box = {
+      x0,
+      x1: x0 + labelWidth,
+      y0: anchor.y + t.dy - LABEL_HALF_H,
+      y1: anchor.y + t.dy + LABEL_HALF_H,
+    };
+    if (box.x0 < 0 || box.y0 < 0 || box.x1 > size.width || box.y1 > size.height) continue;
+    if (obstacles.some((o) => boxesOverlap(box, o))) continue;
+    return { side: t.side, dy: t.dy, box };
+  }
+  return null;
+}
+
 /**
  * 在 el 里建一张公交地图。
  * routes: [{ stations: [{name, order, lat, lng}], buses: [{lat, lng, speed, plate, order}], targetOrder }]
@@ -133,9 +181,70 @@ export async function createBusMap(el, { routes }) {
     }
   }
 
+  /** 车辆标记在屏幕上的包围盒（供站名防撞用；落点逻辑与 renderBusMarkers 保持一致） */
+  function computeBusBoxes() {
+    const boxes = [];
+    const zoom = map.getZoom();
+    const toPx = (lngLat) => map.lngLatToContainer(new AMap.LngLat(lngLat[0], lngLat[1]));
+    for (const route of currentRoutes) {
+      const buses = (route.buses || [])
+        .map((b) => ({ ...b, pos: gcj(b.lng, b.lat) }))
+        .filter((b) => b.pos);
+      if (zoom >= BUS_LABEL_ZOOM) {
+        const groups = [];
+        for (const b of buses) {
+          const g = groups.find((g) => sameSpot([g.pos, b.pos]));
+          if (g) g.items.push(b);
+          else groups.push({ pos: b.pos, items: [b] });
+        }
+        for (const g of groups) {
+          const c = toPx(g.pos);
+          if (g.items.length === 1) {
+            // 单辆车：白底时速 pill，约 90×28（offset [-14,-13]）
+            boxes.push({ x0: c.x - 14, x1: c.x + 76, y0: c.y - 13, y1: c.y + 15 });
+          } else {
+            // 环形散开：34px 半径的环 + pill，按 120×120 的方框算
+            boxes.push({ x0: c.x - 60, x1: c.x + 60, y0: c.y - 60, y1: c.y + 60 });
+          }
+        }
+        continue;
+      }
+      for (const c of clusterBuses(buses)) {
+        const p = toPx([c.lng, c.lat]);
+        if (c.items.length === 1) {
+          // 单辆车：26px 绿圆点（offset [-13,-13]）
+          boxes.push({ x0: p.x - 13, x1: p.x + 13, y0: p.y - 13, y1: p.y + 13 });
+        } else {
+          const key = `${c.lng.toFixed(5)},${c.lat.toFixed(5)}`;
+          const coincident = sameSpot(c.items.map((b) => b.pos));
+          if (coincident && expandedClusterKey === key) {
+            boxes.push({ x0: p.x - 60, x1: p.x + 60, y0: p.y - 60, y1: p.y + 60 });
+          } else {
+            // 簇徽章 🚌×N，约 55×28（offset [-20,-13]）
+            boxes.push({ x0: p.x - 20, x1: p.x + 35, y0: p.y - 13, y1: p.y + 15 });
+          }
+        }
+      }
+    }
+    return boxes;
+  }
+
+  const stationDotHtml = (dot, isTarget, isEnd) =>
+    `<span style="flex:none;width:${dot}px;height:${dot}px;border-radius:50%;background:${isTarget || isEnd ? "#1B5BFF" : "#fff"};border:2.5px solid #1B5BFF;box-shadow:0 1px 4px rgba(0,0,0,.3)"></span>`;
+
+  const stationLabelHtml = (name, isTarget, dy) =>
+    `<span class="st-label" style="background:rgba(255,255,255,.94);border:1px solid #d1d5db;border-radius:6px;padding:2px 7px;font-size:11.5px;font-weight:${isTarget ? 800 : 600};color:${isTarget ? "#1D4ED8" : "#374151"};white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.15);transform:translateY(${dy - 4}px)">${esc(name)}</span>`;
+
   function renderStationMarkers() {
     removeMarkers(stationMarkers);
     const zoom = map.getZoom();
+    const size = map.getSize();
+    const container = { width: size.width, height: size.height };
+    // 先收集全部候选站名（跨线路统一防撞），按优先级排序：目标站 > 起讫站 > 其余按站序。
+    // 站名按缩放决定是否挂进标记（不是 CSS 隐藏）：默认 fit 缩放约 11 时稀疏显示，
+    // 之前 zoom-low 阈值 15 与 fit 缩放对不上，站名在默认视图下永远不显示。
+    const candidates = [];
+    const dotsOnly = [];
     for (const route of currentRoutes) {
       const stations = (route.stations || []).filter((s) => gcj(s.lng, s.lat));
       const sorted = [...stations].sort((a, b) => a.order - b.order);
@@ -145,8 +254,6 @@ export async function createBusMap(el, { routes }) {
         if (!pos) continue;
         const isTarget = route.targetOrder && s.order === route.targetOrder;
         const isEnd = i === 0 || i === sorted.length - 1;
-        // 站名按缩放决定是否挂进标记（不是 CSS 隐藏）：默认 fit 缩放约 11 时稀疏显示，
-        // 之前 zoom-low 阈值 15 与 fit 缩放对不上，站名在默认视图下永远不显示。
         const showLabel = shouldShowStationLabel({
           zoom,
           index: i,
@@ -154,22 +261,51 @@ export async function createBusMap(el, { routes }) {
           isTarget,
           isEnd,
         });
-        const dot = isTarget ? 16 : 11;
-        const label = showLabel
-          ? `<span class="st-label" style="background:rgba(255,255,255,.94);border:1px solid #d1d5db;border-radius:6px;padding:2px 7px;font-size:11.5px;font-weight:${isTarget ? 800 : 600};color:${isTarget ? "#1D4ED8" : "#374151"};white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.15);transform:translateY(-4px)">${esc(s.name)}</span>`
-          : "";
-        const marker = new AMap.Marker({
-          position: pos,
-          content: `<div style="display:flex;align-items:center;gap:5px"><span style="flex:none;width:${dot}px;height:${dot}px;border-radius:50%;background:${isTarget || isEnd ? "#1B5BFF" : "#fff"};border:2.5px solid #1B5BFF;box-shadow:0 1px 4px rgba(0,0,0,.3)"></span>${label}</div>`,
-          offset: new AMap.Pixel(-dot / 2, -dot / 2),
-          title: s.name,
-          // 站名标签层级高于车辆气泡/簇徽章（100），目标站最高，避免站名被车盖住
-          zIndex: isTarget ? 300 : 200,
-        });
-        map.add(marker);
-        stationMarkers.push(marker);
+        const item = { s, pos, isTarget, isEnd, order: s.order };
+        if (showLabel) candidates.push(item);
+        else dotsOnly.push(item);
       }
     }
+    candidates.sort(
+      (a, b) =>
+        (a.isTarget ? 0 : a.isEnd ? 1 : 2) - (b.isTarget ? 0 : b.isEnd ? 1 : 2) || a.order - b.order,
+    );
+    const busBoxes = computeBusBoxes();
+    const keptBoxes = [];
+    const drawStation = (item, placement) => {
+      const { s, pos, isTarget, isEnd } = item;
+      const dot = isTarget ? 16 : 11;
+      const labelWidth = estimateLabelWidth(s.name);
+      const label = placement ? stationLabelHtml(s.name, isTarget, placement.dy) : "";
+      const dotHtml = stationDotHtml(dot, isTarget, isEnd);
+      // 标签在圆点左侧时内容顺序调换，并把 offset 左移一个标签宽，保证圆点仍落在站位上
+      const content =
+        placement && placement.side === "left"
+          ? `<div style="display:flex;align-items:center;gap:5px">${label}${dotHtml}</div>`
+          : `<div style="display:flex;align-items:center;gap:5px">${dotHtml}${label}</div>`;
+      const offsetX =
+        placement && placement.side === "left" ? -(labelWidth + 5 + dot / 2) : -dot / 2;
+      const marker = new AMap.Marker({
+        position: pos,
+        content,
+        offset: new AMap.Pixel(offsetX, -dot / 2),
+        title: s.name,
+        // 站名标签层级高于车辆气泡/簇徽章（100），目标站最高，避免站名被车盖住
+        zIndex: isTarget ? 300 : 200,
+      });
+      map.add(marker);
+      stationMarkers.push(marker);
+    };
+    for (const item of candidates) {
+      const { s, pos, isTarget } = item;
+      const dot = isTarget ? 16 : 11;
+      const labelWidth = estimateLabelWidth(s.name);
+      const anchor = map.lngLatToContainer(new AMap.LngLat(pos[0], pos[1]));
+      const placement = placeLabel(anchor, dot, labelWidth, [...keptBoxes, ...busBoxes], container);
+      if (placement) keptBoxes.push(placement.box);
+      drawStation(item, placement);
+    }
+    for (const item of dotsOnly) drawStation(item, null);
   }
 
   /** 距离很近的车合成一簇（中心取第一辆车的位置） */
