@@ -221,6 +221,9 @@ export async function fetchLine({
     order: typeof s.order === "number" ? s.order : 0,
     sId: s.sId || "",
     metropolitan: Array.isArray(s.metros) && s.metros.length > 0,
+    // 地图用：上游站点带 WGS-84 经纬度
+    lat: typeof s.lat === "number" ? s.lat : null,
+    lng: typeof s.lng === "number" ? s.lng : null,
   }));
 
   // 目标站以「传进来的 stationId 是否真在这条线上」为准：
@@ -244,6 +247,11 @@ export async function fetchLine({
         distNext: typeof b.distanceToSc === "number" && b.distanceToSc >= 0 ? b.distanceToSc : -1,
         eta: toTarget && typeof toTarget.travelTime === "number" ? toTarget.travelTime : -1,
         dist: typeof b.distanceToWaitStn === "number" && b.distanceToWaitStn >= 0 ? b.distanceToWaitStn : -1,
+        // 地图用：在途车辆实时 GPS（WGS-84）+ 车牌 + 时速，上游 lineDetail 原样带回
+        lat: typeof b.lat === "number" ? b.lat : null,
+        lng: typeof b.lng === "number" ? b.lng : null,
+        speed: typeof b.speed === "number" ? b.speed : null,
+        plate: typeof b.licence === "string" ? b.licence : "",
       };
     })
     .filter((b) => b.order > 0)
