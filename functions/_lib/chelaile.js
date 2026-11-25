@@ -165,8 +165,28 @@ export async function fetchSearch({ cityId = "040", q }) {
     key: query,
     supportPhyStn: "true",
   });
-  const r = raw?.result || {};
-  const lines = (Array.isArray(r.lines) ? r.lines : [])
+  let r = raw?.result || {};
+  let lines = shapeSearchLines(r);
+  let stations = shapeSearchStations(r);
+  // 上游偶尔一次回空结果（2026-11-25 实测：同查「上社」12 次里 1 次空），
+  // 空了就再查一次，别把一次抖动当成「没有匹配」报给用户。
+  if (!lines.length && !stations.length) {
+    const retry = await request("/bus/query!nSearch.action", {
+      ...DEFAULT_PARAMS,
+      cityId,
+      localCityId: cityId,
+      key: query,
+      supportPhyStn: "true",
+    });
+    r = retry?.result || {};
+    lines = shapeSearchLines(r);
+    stations = shapeSearchStations(r);
+  }
+  return { cityId, q: query, lines, stations };
+}
+
+function shapeSearchLines(r) {
+  return (Array.isArray(r.lines) ? r.lines : [])
     .map((l) => ({
       no: String(l.name || l.lineNo || "").replace(/^0+/, ""),
       lineId: l.lineId || "",
@@ -177,7 +197,10 @@ export async function fetchSearch({ cityId = "040", q }) {
     }))
     .filter((l) => l.no && l.lineId)
     .slice(0, 8);
-  const stations = (Array.isArray(r.stations) ? r.stations : [])
+}
+
+function shapeSearchStations(r) {
+  return (Array.isArray(r.stations) ? r.stations : [])
     .map((s) => ({
       sId: s.sId || "",
       name: s.sn || "",
@@ -190,7 +213,6 @@ export async function fetchSearch({ cityId = "040", q }) {
     }))
     .filter((s) => s.name)
     .slice(0, 8);
-  return { cityId, q: query, lines, stations };
 }
 
 export async function fetchStation({

@@ -30,7 +30,8 @@ export async function onRequestGet({ request }) {
 
   try {
     const data = await fetchSearch({ cityId, q });
-    return json(data, 200, { "Cache-Control": "public, max-age=60, s-maxage=60" });
+    // 搜索结果不缓存：上游偶尔回一次空结果，缓存会把那次空放大成一分钟的「没有匹配」。
+    return json(data, 200, { "Cache-Control": "no-store" });
   } catch (error) {
     return json(
       { error: "上游查询失败", detail: String(error?.message || error) },
