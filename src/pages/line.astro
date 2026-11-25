@@ -168,7 +168,7 @@ const lineNo = params.get("n") || "线路";
 
     function busBadge(b) {
       const tail = plateTail(b.plate);
-      const speed = typeof b.speed === "number" && b.speed > 0 ? `${Math.round(b.speed)}` : "";
+      const speed = typeof b.speed === "number" && b.speed > 0 ? `${Math.round(b.speed)} km/h` : "";
       const label = tail || speed || "";
       return `<span class="bus-badge">🚌${label ? ` ${esc(label)}` : ""}</span>`;
     }
