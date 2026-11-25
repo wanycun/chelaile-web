@@ -96,6 +96,7 @@ const lineNo = params.get("n") || "线路";
     let mapOpen = false;
     let mapRouteKey = "";
     let stationResolved = false; // 上车站兜底只做一次，避免反复重查
+    let retryTimer = null; // 刷新失败后 3 秒重试一次的定时器（只挂一个）
     const favId = () => `${currentLineId}#${currentDir}`;
     // 方向编码在 lineId 末尾：…-1 / …-0
     const flipLineId = (id) =>
@@ -323,11 +324,30 @@ const lineNo = params.get("n") || "线路";
     }
 
     async function load() {
+      clearTimeout(retryTimer);
+      retryTimer = null;
       const cached = readLineCache();
       if (cached) {
         // 缓存首绘：先定默认站再画，避免先闪一下终点站
         const station = applyInitialStation(cached);
-        render(station ? withTarget(cached, station) : cached);
+        if (station) {
+          render(withTarget(cached, station));
+        } else if (stationId) {
+          // 切站后缓存首绘：把缓存数据重定向到当前站，别闪回旧站；
+          // 缓存里车辆的 ETA 是按旧目标站算的，改显示“更新中…”等新鲜数据纠正
+          const cur = cached.stations.find((s) => s.sId === stationId);
+          if (cur && cur.order !== cached.line.targetOrder) {
+            render(withTarget(cached, cur));
+            els.trackEta.textContent = "更新中…";
+            els.trackEta.classList.remove("none");
+            els.trackMeta.textContent = "";
+            els.trackNext.textContent = "";
+          } else {
+            render(cached);
+          }
+        } else {
+          render(cached);
+        }
       }
       try {
         let data = await fetchLineData();
@@ -361,6 +381,13 @@ const lineNo = params.get("n") || "线路";
         } else {
           els.msg.textContent = "更新失败，显示的是缓存数据";
           els.msg.className = "msg";
+        }
+        // 保留当前视图（不刷回旧站），3 秒后重试一次，不等 20 秒轮询
+        if (!retryTimer) {
+          retryTimer = setTimeout(() => {
+            retryTimer = null;
+            load();
+          }, 3000);
         }
       }
     }

@@ -128,9 +128,12 @@ export function reshapeNearby(raw, limit = 8) {
 }
 
 /** 附近站点（首页） */
+// 明文接口：homePage.action 与加密版返回同一结构，实测 2026-11-25 可用；
+// 走明文可省掉整段 AES 解密（B1 线路密文 39KB 纯 JS 解密约 140ms、附近 104KB 约 390ms，
+// 是 Worker 间歇报资源超限的主因）。站点详情没有可用的明文接口，仍走加密版。
 export async function fetchNearby({ cityId = "040", lat, lng, limit = 8 }) {
   if (!lat || !lng) throw new Error("缺少 lat/lng");
-  const raw = await request("/bus/stop!encryptedHomePage.action", {
+  const raw = await request("/bus/stop!homePage.action", {
     ...DEFAULT_PARAMS,
     cityId,
     localCityId: "undefined",
@@ -187,6 +190,7 @@ export async function fetchStation({
 }
 
 /** 单条线路详情（线路页）：沿途站点 + 车辆位置 */
+// 明文接口：lineDetail.action 与加密版返回同一结构，实测 2026-11-25 可用（见 fetchNearby 注释）。
 export async function fetchLine({
   cityId = "040",
   lineId,
@@ -196,7 +200,7 @@ export async function fetchLine({
   lng = "",
 }) {
   if (!lineId) throw new Error("缺少 lineId");
-  const raw = await request("/bus/line!encryptedLineDetail.action", {
+  const raw = await request("/bus/line!lineDetail.action", {
     ...DEFAULT_PARAMS,
     cityId,
     localCityId: cityId,
