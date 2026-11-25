@@ -32,20 +32,6 @@ import Base from "../layouts/Base.astro";
       <button class="search-btn" id="search-btn" type="button">搜索</button>
     </div>
 
-    <section class="watch" id="watch">
-      <div class="watch-head">
-        <span>我的盯梢 <span class="watch-note" id="watch-note"></span></span>
-        <button class="map-toggle" id="watch-map-toggle" type="button" style="margin:0">🗺 地图</button>
-      </div>
-      <div class="map-box" id="watch-map" hidden></div>
-      <p class="map-err" id="watch-map-err" hidden></p>
-      <div class="watch-grid" id="watch-grid">
-        <div class="skeleton"></div>
-        <div class="skeleton"></div>
-      </div>
-    </section>
-    <p class="msg" id="watch-city-note" hidden>我的盯梢只支持广州，切回广州后恢复显示</p>
-
     <section class="favs" id="favs" hidden>
       <div class="sec-title"><span>收藏</span></div>
       <div class="favs-row" id="favs-row"></div>
@@ -76,11 +62,7 @@ import Base from "../layouts/Base.astro";
   <script>
     import { esc, hhmm, fmtDist, lineRow, lineHref, stationHref, getJSON } from "../scripts/util.js";
     import { getFavs, isFavStation, toggleStation, toggleLine, onFavChange } from "../scripts/favs.js";
-    import {
-      CITY, watchGroup, watchTargets, fetchWatchLine, nearestBus, nextBus, plateTail,
-      getTrackedTrip, clearTrackedTrip,
-    } from "../scripts/watch.js";
-    import { loadAmap, createBusMap, applyMapTheme } from "../scripts/amap.js";
+    import { nearestBus, getTrackedTrip, clearTrackedTrip } from "../scripts/watch.js";
     import { getCity, setCity, openCityPicker, cityCenter } from "../scripts/city.js";
     import { applyTheme, toggleTheme } from "../scripts/theme.js";
 
@@ -100,11 +82,6 @@ import Base from "../layouts/Base.astro";
       citySearch: document.getElementById("city-search"),
       cityList: document.getElementById("city-list"),
       cityMsg: document.getElementById("city-msg"),
-      watchGrid: document.getElementById("watch-grid"),
-      watchNote: document.getElementById("watch-note"),
-      watchMap: document.getElementById("watch-map"),
-      watchMapToggle: document.getElementById("watch-map-toggle"),
-      watchMapErr: document.getElementById("watch-map-err"),
       banner: document.getElementById("track-banner"),
       trackLine: document.getElementById("track-line"),
       trackStation: document.getElementById("track-station"),
@@ -112,8 +89,6 @@ import Base from "../layouts/Base.astro";
       trackSub: document.getElementById("track-sub"),
       trackEnd: document.getElementById("track-end"),
       themeBtn: document.getElementById("theme-btn"),
-      watch: document.getElementById("watch"),
-      watchCityNote: document.getElementById("watch-city-note"),
     };
 
     const FALLBACK_GZ = { lat: 23.142166, lng: 113.316086, label: "体育西路（默认位置）" };
@@ -121,12 +96,6 @@ import Base from "../layouts/Base.astro";
     let state = { lat: null, lng: null, busy: false };
     let lastUpdated = 0;
     let nearbyData = null;
-    let watchResults = [];
-    let watchMapObj = null;
-    let watchMapOpen = false;
-    let watchTargetsKey = "";
-    let watchMapKey = "";
-    let watchMapChain = Promise.resolve();
     let trackedTrip = getTrackedTrip();
 
     const ETA_CACHE = "cl-st-eta-v1";
@@ -476,19 +445,15 @@ import Base from "../layouts/Base.astro";
       }
     }
 
-    /** 切城市：存选择、更新城市名、盯梢只在广州显示、附近/搜索按新城市重拉 */
+    /** 切城市：存选择、更新城市名、附近/搜索按新城市重拉 */
     function applyCity() {
       setCity(city.id, city.name);
       els.city.innerHTML = `${esc(city.name)} <span class="caret">▾</span>`;
-      const isGz = city.id === "040";
-      els.watch.hidden = !isGz;
-      els.watchCityNote.hidden = isGz;
       els.citySearch.hidden = true;
       els.cityList.innerHTML = "";
       els.cityMsg.textContent = "";
       els.search.value = "";
       locate();
-      if (isGz) loadWatch();
       loadBanner();
     }
 
@@ -524,214 +489,6 @@ import Base from "../layouts/Base.astro";
         { timeout: 8000, maximumAge: 60_000 },
       );
     }
-
-    // ── 我的盯梢 ──
-    function watchHref(target) {
-      const q = new URLSearchParams({
-        lineId: target.lineId,
-        dir: String(target.dir),
-        cityId: CITY,
-        stationId: target.stationId,
-        st: target.station,
-        n: target.no,
-      });
-      return `/line/?${q}`;
-    }
-
-    function watchCard(target, data) {
-      const bus = nearestBus(data);
-      const next = nextBus(data);
-      const order = data.line?.targetOrder || 0;
-      const left = bus && order && bus.order ? order - bus.order : 0;
-      const meta = [];
-      if (bus && left > 0) meta.push(`还有 ${left} 站`);
-      const tail = plateTail(bus?.plate);
-      if (tail) meta.push(tail);
-      if (bus && typeof bus.speed === "number" && bus.speed > 0) meta.push(`${Math.round(bus.speed)} km/h`);
-      const etaHtml = !bus
-        ? `<div class="watch-eta none">暂无车辆</div>`
-        : bus.eta < 60
-          ? `<div class="watch-eta">到站了</div>`
-          : `<div class="watch-eta">${Math.max(1, Math.round(bus.eta / 60))}<span class="eta-unit">分钟</span></div>`;
-      const nextHtml = next
-        ? `<span class="watch-next">下一辆 ${Math.max(1, Math.round(next.eta / 60))} 分钟 · ${order && next.order ? Math.max(0, order - next.order) : "?"} 站</span>`
-        : "";
-      return `<a class="watch-card" href="${watchHref(target)}">
-        <div class="watch-top">
-          <span class="watch-pills">
-            <span class="line-pill">${esc(target.no)}</span>
-            <span class="station-pill">${esc(target.station)}站上车</span>
-          </span>
-          <span class="watch-order">${order ? `第 ${order} 站` : ""}</span>
-        </div>
-        ${etaHtml}
-        ${meta.length ? `<div class="watch-meta">${esc(meta.join(" · "))}</div>` : ""}
-        <div class="watch-div"></div>
-        <div class="watch-foot">
-          ${nextHtml}
-          <span class="watch-link">全线 ${data.buses.length} 辆车在途 · 查看</span>
-        </div>
-      </a>`;
-    }
-
-    // ── 我的盯梢：缓存（60 秒内直接画缓存，再后台刷新）──
-    // 用 localStorage 而不用 sessionStorage：sessionStorage 只活在一个标签页里，
-    // 从书签/主屏幕/新标签重复打开时缓存永远是空的，60 秒缓存等于没生效。
-    const WATCH_CACHE = "cl-watch-v1";
-
-    function watchCacheKey(t) {
-      return `${t.lineId}|${t.dir}|${t.stationId}`;
-    }
-
-    function readWatchCache(t) {
-      try {
-        const c = JSON.parse(localStorage.getItem(WATCH_CACHE) || "{}");
-        const hit = c[watchCacheKey(t)];
-        if (hit && Date.now() - hit.t < 60_000) return hit.data;
-      } catch {
-        /* ignore */
-      }
-      return null;
-    }
-
-    function writeWatchCache(t, data) {
-      try {
-        const c = JSON.parse(localStorage.getItem(WATCH_CACHE) || "{}");
-        c[watchCacheKey(t)] = { t: Date.now(), data };
-        localStorage.setItem(WATCH_CACHE, JSON.stringify(c));
-      } catch {
-        /* ignore */
-      }
-    }
-
-    /** 分组骨架：线路名 + 上车站立即出，不等网络 */
-    function watchSlotSkeleton(target) {
-      return `<div class="watch-card">
-        <div class="watch-top">
-          <span class="watch-pills">
-            <span class="line-pill">${esc(target.no)}</span>
-            <span class="station-pill">${esc(target.station)}站上车</span>
-          </span>
-          <span class="watch-order"></span>
-        </div>
-        <div class="watch-eta none" style="font-size:22px">更新中…</div>
-      </div>`;
-    }
-
-    function watchSlotError(target, error) {
-      return `<div class="watch-card">
-        <div class="watch-top">
-          <span class="watch-pills">
-            <span class="line-pill">${esc(target.no)}</span>
-            <span class="station-pill">${esc(target.station)}站上车</span>
-          </span>
-        </div>
-        <div class="watch-err">查询失败：${esc(error)}</div>
-      </div>`;
-    }
-
-    function watchRoutes() {
-      return watchResults
-        .filter((r) => r.data)
-        .map((r) => ({ stations: r.data.stations, buses: r.data.buses, targetOrder: r.data.line?.targetOrder || 0 }));
-    }
-
-    /** 首页地图：线路组合不变时原地刷新车辆，不变时才重建（不重置视野） */
-    async function rebuildWatchMap() {
-      const routes = watchRoutes();
-      if (!routes.length) return;
-      const key = watchResults.map((r) => r.target.lineId + "#" + r.target.dir).join(",");
-      try {
-        await loadAmap();
-        if (watchMapObj && watchMapKey === key) {
-          watchMapObj.updateBuses(routes);
-        } else {
-          if (watchMapObj) watchMapObj.destroy();
-          watchMapObj = await createBusMap(els.watchMap, { routes });
-          watchMapKey = key;
-        }
-        els.watchMapErr.hidden = true;
-      } catch (err) {
-        els.watchMapErr.textContent = err.message || "地图加载失败";
-        els.watchMapErr.hidden = false;
-      }
-    }
-
-    /** 串行化地图重建，避免多路并发同时建图 */
-    function queueWatchMap() {
-      watchMapChain = watchMapChain.then(() => rebuildWatchMap()).catch(() => {});
-    }
-
-    async function loadWatch() {
-      // 我的盯梢只有广州的 8 条线，非广州城市不显示该节
-      if (city.id !== "040") return;
-      const group = watchGroup();
-      const targets = watchTargets(group);
-      els.watchNote.textContent =
-        group === "morning" ? "早班 · 往体育中心" : group === "evening" ? "晚班 · 往棠德花苑" : "早班 + 晚班";
-      const key = targets.map((t) => t.lineId + "#" + t.dir + "#" + t.stationId).join(",");
-      // 目标组合没变时不重建骨架（避免每 30 秒轮询闪一下），只逐卡更新数据
-      if (key !== watchTargetsKey) {
-        watchTargetsKey = key;
-        const groups = [];
-        for (const g of ["morning", "evening"]) {
-          const ts = targets.filter((t) => t.group === g);
-          if (ts.length) {
-            groups.push({
-              title: g === "morning" ? "早班组 · 往体育中心" : "晚班组 · 往棠德花苑",
-              targets: ts,
-            });
-          }
-        }
-        let html = "";
-        let i = 0;
-        for (const g of groups) {
-          html += `<div class="watch-group">${esc(g.title)}</div>`;
-          for (const t of g.targets) {
-            html += `<div class="watch-slot" data-slot="${i}">${watchSlotSkeleton(t)}</div>`;
-            i++;
-          }
-        }
-        els.watchGrid.innerHTML = html;
-        watchResults = targets.map((t) => ({ target: t, data: null, error: null }));
-      }
-      const jobs = targets.map((t, idx) => {
-        const slot = els.watchGrid.querySelector(`[data-slot="${idx}"]`);
-        const cached = readWatchCache(t);
-        if (cached) {
-          watchResults[idx] = { target: t, data: cached, error: null };
-          if (slot) slot.innerHTML = watchCard(t, cached);
-        }
-        return fetchWatchLine(getJSON, t)
-          .then((data) => {
-            watchResults[idx] = { target: t, data, error: null };
-            writeWatchCache(t, data);
-            if (slot) slot.innerHTML = watchCard(t, data);
-            // 地图开着时车辆原地更新，不重建
-            if (watchMapOpen && watchMapObj) watchMapObj.updateBuses(watchRoutes());
-          })
-          .catch((err) => {
-            // 有缓存时保留缓存卡片，只在无缓存时显示失败
-            if (!cached && slot) slot.innerHTML = watchSlotError(t, err.message);
-            watchResults[idx] = { target: t, data: cached || null, error: err.message };
-            if (watchMapOpen && watchMapObj) watchMapObj.updateBuses(watchRoutes());
-          });
-      });
-      await Promise.allSettled(jobs);
-      if (watchMapOpen) queueWatchMap();
-    }
-
-    els.watchMapToggle.addEventListener("click", async () => {
-      watchMapOpen = !watchMapOpen;
-      els.watchMap.hidden = !watchMapOpen;
-      els.watchMapToggle.textContent = watchMapOpen ? "收起地图" : "🗺 地图";
-      if (watchMapOpen) queueWatchMap();
-      else if (watchMapObj) {
-        watchMapObj.destroy();
-        watchMapObj = null;
-        watchMapKey = "";
-      }
-    });
 
     // ── 首页追踪横幅 ──
     function paintBanner(trip, data) {
@@ -791,13 +548,6 @@ import Base from "../layouts/Base.astro";
     els.refresh.addEventListener("click", () => load());
     els.themeBtn.addEventListener("click", toggleTheme);
     applyTheme();
-    // 切主题时首页地图实例跟着换底图
-    window.addEventListener("bus-theme-change", (ev) => {
-      if (watchMapObj?.map) applyMapTheme(watchMapObj.map, ev.detail.theme);
-    });
-    // 非广州城市进来时先把盯梢节藏掉（loadWatch 里也有守卫）
-    els.watch.hidden = city.id !== "040";
-    els.watchCityNote.hidden = city.id === "040";
     els.city.innerHTML = `${esc(city.name)} <span class="caret">▾</span>`;
     els.search.addEventListener("input", applySearch);
     els.searchBtn.addEventListener("click", runSearch);
@@ -811,21 +561,17 @@ import Base from "../layouts/Base.astro";
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible") {
         renderFavs();
-        loadWatch();
         loadBanner();
         if (Date.now() - lastUpdated > 20_000) load({ silent: true });
       }
     });
 
     renderFavs();
-    loadAmap().catch(() => {}); // 预加载高德脚本，点开地图时不再等
     locate();
-    loadWatch();
     loadBanner();
     setInterval(() => {
       if (document.visibilityState === "visible") {
         load({ silent: true });
-        loadWatch();
         loadBanner();
       }
     }, 30_000);
