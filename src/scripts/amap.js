@@ -1,9 +1,20 @@
 // 高德地图：JS API 加载 + 公交线路 / 车辆落图 + 算路方案画线
 import { wgs84ToGcj02, plateTail } from "./watch.js";
 import { esc } from "./util.js";
+import { isDark } from "./theme.js";
 
 export const AMAP_JS_KEY = "79bf7b30ea3e72975f232532d0312aac";
 const AMAP_SECURITY_CODE = "259d66682eebf0d8999f65b99175221c";
+
+/** 主题切换时让已有地图实例跟上：dark 用高德深色底图，否则回标准底图 */
+export function applyMapTheme(map, theme) {
+  if (!map || typeof map.setMapStyle !== "function") return;
+  try {
+    map.setMapStyle(theme === "dark" ? "amap://styles/dark" : "amap://styles/normal");
+  } catch {
+    /* 旧版实例不支持就算了 */
+  }
+}
 
 let loadPromise = null;
 
@@ -178,7 +189,12 @@ export function placeLabel(anchor, dot, labelWidth, obstacles, size) {
  */
 export async function createBusMap(el, { routes }) {
   const AMap = await loadAmap();
-  const map = new AMap.Map(el, { zoom: 14, center: [113.32, 23.13], resizeEnable: true });
+  const map = new AMap.Map(el, {
+    zoom: 14,
+    center: [113.32, 23.13],
+    resizeEnable: true,
+    ...(isDark() ? { mapStyle: "amap://styles/dark" } : {}),
+  });
   const polylineOverlays = [];
   let stationMarkers = [];
   let busMarkers = [];
@@ -539,7 +555,11 @@ export async function createBusMap(el, { routes }) {
  */
 export async function drawPlanOnMap(el, plan, { origin, destination } = {}) {
   const AMap = await loadAmap();
-  const map = new AMap.Map(el, { zoom: 14, resizeEnable: true });
+  const map = new AMap.Map(el, {
+    zoom: 14,
+    resizeEnable: true,
+    ...(isDark() ? { mapStyle: "amap://styles/dark" } : {}),
+  });
   const overlays = [];
   const add = (o) => {
     map.add(o);

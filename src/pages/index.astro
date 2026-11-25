@@ -6,12 +6,15 @@ import Base from "../layouts/Base.astro";
   <main class="wrap">
     <header class="top">
       <div>
-        <div class="city" id="city">广州 <span class="caret">▾</span></div>
+        <button class="city" id="city" type="button">广州 <span class="caret">▾</span></button>
         <div class="city-sub" id="status">正在定位…</div>
       </div>
-      <button class="refresh" id="refresh" type="button">
-        <span id="refresh-icon">⟳</span> 刷新
-      </button>
+      <div style="display:flex;gap:8px;flex:none">
+        <button class="theme-btn" id="theme-btn" type="button" aria-label="切换深色模式">🌙</button>
+        <button class="refresh" id="refresh" type="button">
+          <span id="refresh-icon">⟳</span> 刷新
+        </button>
+      </div>
     </header>
 
     <section class="track-banner" id="track-banner" hidden>
@@ -41,6 +44,7 @@ import Base from "../layouts/Base.astro";
         <div class="skeleton"></div>
       </div>
     </section>
+    <p class="msg" id="watch-city-note" hidden>我的盯梢只支持广州，切回广州后恢复显示</p>
 
     <section class="favs" id="favs" hidden>
       <div class="sec-title"><span>收藏</span></div>
@@ -76,7 +80,11 @@ import Base from "../layouts/Base.astro";
       CITY, watchGroup, watchTargets, fetchWatchLine, nearestBus, nextBus, plateTail,
       getTrackedTrip, clearTrackedTrip,
     } from "../scripts/watch.js";
-    import { loadAmap, createBusMap } from "../scripts/amap.js";
+    import { loadAmap, createBusMap, applyMapTheme } from "../scripts/amap.js";
+    import { getCity, setCity, openCityPicker, cityCenter } from "../scripts/city.js";
+    import { applyTheme, toggleTheme } from "../scripts/theme.js";
+
+    let city = getCity();
 
     const els = {
       list: document.getElementById("list"),
@@ -103,9 +111,12 @@ import Base from "../layouts/Base.astro";
       trackBig: document.getElementById("track-big"),
       trackSub: document.getElementById("track-sub"),
       trackEnd: document.getElementById("track-end"),
+      themeBtn: document.getElementById("theme-btn"),
+      watch: document.getElementById("watch"),
+      watchCityNote: document.getElementById("watch-city-note"),
     };
 
-    const FALLBACK = { lat: 23.142166, lng: 113.316086, label: "体育西路（默认位置）" };
+    const FALLBACK_GZ = { lat: 23.142166, lng: 113.316086, label: "体育西路（默认位置）" };
 
     let state = { lat: null, lng: null, busy: false };
     let lastUpdated = 0;
@@ -160,7 +171,7 @@ import Base from "../layouts/Base.astro";
           sId: s.sId || s.id,
           namesakeStId: s.namesakeStId || "",
           firstLineId: s.firstLineId || "",
-          cityId: s.cityId || CITY,
+          cityId: s.cityId || "040",
         });
         const data = await getJSON(`/api/station?${q}`);
         const eta = soonestEta(data);
@@ -198,7 +209,7 @@ import Base from "../layouts/Base.astro";
         const q = new URLSearchParams({
           lineId,
           dir,
-          cityId: l.cityId || CITY,
+          cityId: l.cityId || "040",
           stationId: l.stationId,
         });
         const data = await getJSON(`/api/line?${q}`);
@@ -224,7 +235,7 @@ import Base from "../layouts/Base.astro";
         sId: s.sId || s.id,
         namesakeStId: s.namesakeStId || "",
         firstLineId: s.firstLineId || "",
-        cityId: s.cityId || CITY,
+        cityId: s.cityId || "040",
         n: s.name,
       });
       return `<a class="fav-row" href="/station/?${q}">
@@ -238,7 +249,7 @@ import Base from "../layouts/Base.astro";
       const q = new URLSearchParams({
         lineId: String(l.id || "").split("#")[0],
         dir: String(l.dir ?? 1),
-        cityId: l.cityId || CITY,
+        cityId: l.cityId || "040",
         stationId: l.stationId || "",
         st: l.st || "",
         n: l.name,
@@ -282,12 +293,12 @@ import Base from "../layouts/Base.astro";
 
     function stationCard(st) {
       const lines = st.lines
-        .map((l) => lineRow(l, { station: st, cityId: CITY }))
+        .map((l) => lineRow(l, { station: st, cityId: city.id }))
         .join("");
       return `
         <section class="station">
           <div class="st-head">
-            <a class="st-name" href="${stationHref(st, CITY)}">${esc(st.name)}${st.subway ? '<span class="sub">地铁</span>' : ""}</a>
+            <a class="st-name" href="${stationHref(st, city.id)}">${esc(st.name)}${st.subway ? '<span class="sub">地铁</span>' : ""}</a>
             <div class="st-right">
               <span class="st-dist">${st.distance >= 0 ? fmtDist(st.distance) : ""}</span>
               <button class="fav${isFavStation(st.sId) ? " on" : ""}" type="button"
@@ -307,7 +318,7 @@ import Base from "../layouts/Base.astro";
 
     function render(data) {
       nearbyData = data;
-      els.city.innerHTML = `${esc(data.city || "广州")} <span class="caret">▾</span>`;
+      els.city.innerHTML = `${esc(city.name)} <span class="caret">▾</span>`;
       els.status.textContent = `更新于 ${hhmm(data.updatedAt)} · 每 30 秒自动刷新`;
       applySearch();
       els.msg.textContent = "";
@@ -365,11 +376,11 @@ import Base from "../layouts/Base.astro";
       els.cityList.innerHTML = `<div class="skeleton"></div>`;
       els.cityMsg.textContent = "";
       try {
-        const data = await getJSON(`/api/search?cityId=${CITY}&q=${encodeURIComponent(query)}`);
+        const data = await getJSON(`/api/search?cityId=${city.id}&q=${encodeURIComponent(query)}`);
         if (seq !== citySearchSeq) return;
         const lines = (data.lines || [])
           .map(
-            (l) => `<div class="line-wrap"><a class="line" href="${lineHref(l, null, CITY)}">
+            (l) => `<div class="line-wrap"><a class="line" href="${lineHref(l, null, city.id)}">
               <span class="badge">${esc(l.no)}</span>
               <span class="dir"><span class="to">${esc(l.from)} → ${esc(l.to)}</span>
               <span class="meta">全城线路 · 点进看沿途站点</span></span>
@@ -378,7 +389,7 @@ import Base from "../layouts/Base.astro";
           .join("");
         const stations = (data.stations || [])
           .map(
-            (s) => `<div class="line-wrap"><a class="line" href="${stationHref(s, CITY)}">
+            (s) => `<div class="line-wrap"><a class="line" href="${stationHref(s, city.id)}">
               <span class="badge">站</span>
               <span class="dir"><span class="to">${esc(s.name)}</span>
               <span class="meta">全城站点 · 点进看全部线路</span></span>
@@ -406,7 +417,7 @@ import Base from "../layouts/Base.astro";
             physicalStId: btn.dataset.stPhysical,
             namesakeStId: btn.dataset.stNamesake,
             firstLineId: btn.dataset.stFirstLine,
-            cityId: CITY,
+            cityId: city.id,
           });
           const on = data.stations.some((s) => s.id === btn.dataset.favStation);
           btn.textContent = on ? "★" : "☆";
@@ -422,7 +433,7 @@ import Base from "../layouts/Base.astro";
             name: btn.dataset.lineName,
             to: btn.dataset.lineTo,
             dir: Number(btn.dataset.lineDir || 0),
-            cityId: btn.dataset.lineCity || CITY,
+            cityId: btn.dataset.lineCity || city.id,
             stationId: btn.dataset.lineStation || "",
             st: btn.dataset.lineStName || "",
           });
@@ -444,7 +455,7 @@ import Base from "../layouts/Base.astro";
         const q = new URLSearchParams({
           lat: String(state.lat),
           lng: String(state.lng),
-          cityId: CITY,
+          cityId: city.id,
           limit: "8",
         });
         const data = await getJSON(`/api/nearby?${q}`);
@@ -465,11 +476,37 @@ import Base from "../layouts/Base.astro";
       }
     }
 
+    /** 切城市：存选择、更新城市名、盯梢只在广州显示、附近/搜索按新城市重拉 */
+    function applyCity() {
+      setCity(city.id, city.name);
+      els.city.innerHTML = `${esc(city.name)} <span class="caret">▾</span>`;
+      const isGz = city.id === "040";
+      els.watch.hidden = !isGz;
+      els.watchCityNote.hidden = isGz;
+      els.citySearch.hidden = true;
+      els.cityList.innerHTML = "";
+      els.cityMsg.textContent = "";
+      els.search.value = "";
+      locate();
+      if (isGz) loadWatch();
+      loadBanner();
+    }
+
+    els.city.addEventListener("click", () => {
+      openCityPicker((c) => {
+        if (c.id === city.id) return;
+        city = c;
+        applyCity();
+      });
+    });
+
     function locate() {
       // 附近站点不等定位：先用默认位置立即加载，拿到真实位置后再按需刷新
+      // 默认位置 = 所选城市市中心（热门城市有快照），拿不到定位时附近仍可用
+      const fb = cityCenter(city.id) || FALLBACK_GZ;
       els.status.textContent = "正在定位…";
-      state.lat = FALLBACK.lat;
-      state.lng = FALLBACK.lng;
+      state.lat = fb.lat;
+      state.lng = fb.lng;
       load();
       if (!navigator.geolocation) return;
       navigator.geolocation.getCurrentPosition(
@@ -626,6 +663,8 @@ import Base from "../layouts/Base.astro";
     }
 
     async function loadWatch() {
+      // 我的盯梢只有广州的 8 条线，非广州城市不显示该节
+      if (city.id !== "040") return;
       const group = watchGroup();
       const targets = watchTargets(group);
       els.watchNote.textContent =
@@ -734,7 +773,7 @@ import Base from "../layouts/Base.astro";
         const q = new URLSearchParams({
           lineId: trackedTrip.lineId,
           dir: String(trackedTrip.dir),
-          cityId: CITY,
+          cityId: trackedTrip.cityId || "040",
           stationId: trackedTrip.stationId,
         });
         paintBanner(trackedTrip, await getJSON(`/api/line?${q}`));
@@ -750,6 +789,16 @@ import Base from "../layouts/Base.astro";
     });
 
     els.refresh.addEventListener("click", () => load());
+    els.themeBtn.addEventListener("click", toggleTheme);
+    applyTheme();
+    // 切主题时首页地图实例跟着换底图
+    window.addEventListener("bus-theme-change", (ev) => {
+      if (watchMapObj?.map) applyMapTheme(watchMapObj.map, ev.detail.theme);
+    });
+    // 非广州城市进来时先把盯梢节藏掉（loadWatch 里也有守卫）
+    els.watch.hidden = city.id !== "040";
+    els.watchCityNote.hidden = city.id === "040";
+    els.city.innerHTML = `${esc(city.name)} <span class="caret">▾</span>`;
     els.search.addEventListener("input", applySearch);
     els.searchBtn.addEventListener("click", runSearch);
     els.search.addEventListener("keydown", (ev) => {

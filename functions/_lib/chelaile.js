@@ -26,7 +26,36 @@ const HEADERS = {
   "Accept-Language": "zh-CN,zh;q=0.9",
 };
 
-export const CITIES = { "040": "广州", "010": "北京", "020": "深圳", "030": "上海" };
+// 上游实测 cityId（2026-11-25 拉 ncitylist 核实）：
+// 北京 027、上海 034、广州 040、深圳 014、天津 006、成都 007、
+// 重庆 003、佛山 019、青岛 009、沈阳 035、南京 018、西安 076。
+export const CITIES = {
+  "040": "广州", "027": "北京", "034": "上海", "014": "深圳",
+  "006": "天津", "007": "成都", "003": "重庆", "019": "佛山",
+  "009": "青岛", "035": "沈阳", "018": "南京", "076": "西安",
+};
+
+/** 城市列表：上游 /wwd/ncitylist，不签名（plain fetch + 微信 UA 即可）。
+ * 回 {cities:[{cityId,name,pinyin,hot}]}，热门在前、其余按拼音排。
+ * 实测 2026-11-25：493 城，data 里的键是 cityList（不是 cities）。 */
+export async function fetchCities() {
+  const url = `https://web.chelaile.net.cn/wwd/ncitylist?${new URLSearchParams(DEFAULT_PARAMS)}`;
+  const res = await fetch(url, { headers: HEADERS });
+  if (!res.ok) throw new Error(`上游 HTTP ${res.status}`);
+  const body = await res.json().catch(() => ({}));
+  const list = body?.data?.cityList || body?.data?.cities || [];
+  const cities = list
+    .map((c) => ({
+      cityId: String(c.cityId || ""),
+      name: c.cityName || "",
+      pinyin: c.pinyin || "",
+      hot: c.isHot === 1 || c.isHot === true,
+    }))
+    .filter((c) => c.cityId && c.name)
+    .sort((a, b) => (b.hot - a.hot) || a.pinyin.localeCompare(b.pinyin));
+  if (!cities.length) throw new Error("上游城市列表为空");
+  return { cities };
+}
 
 export function cryptoSign(params) {
   const str =

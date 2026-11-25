@@ -18,7 +18,11 @@ const cityId = params.get("cityId") || "040";
         <div class="city" id="name">{stationName}</div>
         <div class="city-sub" id="status">加载中…</div>
       </div>
-      <button class="fav big" id="fav-station" type="button" aria-label="收藏站点">☆</button>
+      <div style="display:flex;gap:8px;flex:none">
+        <button class="city-mini" id="city-mini" type="button">广州 ▾</button>
+        <button class="theme-btn" id="theme-btn" type="button" aria-label="切换深色模式">🌙</button>
+        <button class="fav big" id="fav-station" type="button" aria-label="收藏站点">☆</button>
+      </div>
     </header>
 
     <div class="list" id="list">
@@ -31,6 +35,8 @@ const cityId = params.get("cityId") || "040";
   <script>
     import { esc, hhmm, lineRow, getJSON } from "../scripts/util.js";
     import { isFavStation, toggleStation, isFavLine, toggleLine } from "../scripts/favs.js";
+    import { openCityPicker, fetchCities } from "../scripts/city.js";
+    import { applyTheme, toggleTheme } from "../scripts/theme.js";
 
     const qp = new URLSearchParams(location.search);
     const physicalStId = qp.get("physicalStId") || "";
@@ -45,6 +51,8 @@ const cityId = params.get("cityId") || "040";
       status: document.getElementById("status"),
       name: document.getElementById("name"),
       fav: document.getElementById("fav-station"),
+      cityMini: document.getElementById("city-mini"),
+      themeBtn: document.getElementById("theme-btn"),
     };
 
     let station = null;
@@ -120,6 +128,23 @@ const cityId = params.get("cityId") || "040";
       });
       paintFav();
     });
+
+    // 城市名入口：显示本页 URL 的城市，点选后跳回首页（新城市生效）
+    (async () => {
+      const name =
+        cityId === "040"
+          ? "广州"
+          : (await fetchCities().catch(() => []))?.find((c) => c.cityId === cityId)?.name || cityId;
+      els.cityMini.textContent = `${name} ▾`;
+    })();
+    els.cityMini.addEventListener("click", () => {
+      openCityPicker(() => {
+        location.href = "/";
+      });
+    });
+
+    els.themeBtn.addEventListener("click", toggleTheme);
+    applyTheme();
 
     load();
     timer = setInterval(() => {

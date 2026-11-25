@@ -10,6 +10,10 @@ import Base from "../layouts/Base.astro";
         <div class="city">路线规划</div>
         <div class="city-sub">高德公交算路 · 站名用快照坐标，不怕认错地方</div>
       </div>
+      <div style="display:flex;gap:8px;flex:none">
+        <button class="city-mini" id="city-mini" type="button">广州 ▾</button>
+        <button class="theme-btn" id="theme-btn" type="button" aria-label="切换深色模式">🌙</button>
+      </div>
     </header>
 
     <section class="route-form">
@@ -46,7 +50,11 @@ import Base from "../layouts/Base.astro";
   <script>
     import { esc, getJSON } from "../scripts/util.js";
     import { normalizeStationName, KNOWN_STATIONS, wgs84ToGcj02 } from "../scripts/watch.js";
-    import { loadAmap, drawPlanOnMap } from "../scripts/amap.js";
+    import { loadAmap, drawPlanOnMap, applyMapTheme } from "../scripts/amap.js";
+    import { getCity, openCityPicker } from "../scripts/city.js";
+    import { applyTheme, toggleTheme } from "../scripts/theme.js";
+
+    let city = getCity();
 
     const els = {
       origin: document.getElementById("origin"),
@@ -59,7 +67,26 @@ import Base from "../layouts/Base.astro";
       mapErr: document.getElementById("map-err"),
       planList: document.getElementById("plan-list"),
       msg: document.getElementById("msg"),
+      cityMini: document.getElementById("city-mini"),
+      themeBtn: document.getElementById("theme-btn"),
     };
+
+    // 城市名入口：点选后整页按新城市重载（快捷站名只在广州有意义）
+    els.cityMini.textContent = `${city.name} ▾`;
+    els.cityMini.addEventListener("click", () => {
+      openCityPicker((c) => {
+        if (c.id === city.id) return;
+        location.reload();
+      });
+    });
+    // 快捷站名（BRT上社 / 天河 …）都是广州的站，非广州城市时藏掉
+    els.chips.hidden = city.id !== "040";
+
+    els.themeBtn.addEventListener("click", toggleTheme);
+    applyTheme();
+    window.addEventListener("bus-theme-change", (ev) => {
+      if (mapObj?.map) applyMapTheme(mapObj.map, ev.detail.theme);
+    });
 
     let strategy = "0";
     let selectedPlan = -1;
@@ -87,9 +114,10 @@ import Base from "../layouts/Base.astro";
     /**
      * 端点解析：归一化站名命中盯梢站 → 用 /api/line 快照里该站的真实经纬度
      * （跳过地理编码，「上社」不会再被认成花都）；其余只传文本走地理编码。
+     * 快照坐标只在广州有效，非广州城市一律走文本地理编码。
      */
     async function resolveEndpoint(text) {
-      const known = KNOWN_STATIONS[normalizeStationName(text)];
+      const known = city.id === "040" ? KNOWN_STATIONS[normalizeStationName(text)] : null;
       if (!known) return { name: text, fromSnapshot: false };
       try {
         const q = new URLSearchParams({
@@ -199,6 +227,7 @@ import Base from "../layouts/Base.astro";
           origin: o.name,
           destination: d.name,
           strategy,
+          city: city.name,
         });
         if (o.fromSnapshot) {
           q.set("originLng", String(o.lng));

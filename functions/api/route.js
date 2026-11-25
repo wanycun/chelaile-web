@@ -14,8 +14,8 @@ function parsePolyline(s) {
     .filter((p) => p.length === 2 && Number.isFinite(p[0]) && Number.isFinite(p[1]));
 }
 
-async function geocode(key, address) {
-  const q = new URLSearchParams({ address, city: "广州", key });
+async function geocode(key, address, cityName) {
+  const q = new URLSearchParams({ address, city: cityName, key });
   const res = await fetch(`https://restapi.amap.com/v3/geocode/geo?${q}`);
   const data = await res.json().catch(() => ({}));
   if (data.status !== "1" || !data.geocodes?.length) {
@@ -90,6 +90,8 @@ export async function onRequestGet({ request, env }) {
   const origin = (url.searchParams.get("origin") || "").slice(0, 60);
   const destination = (url.searchParams.get("destination") || "").slice(0, 60);
   const strategy = url.searchParams.get("strategy") || "0";
+  // 算路城市：前端传所选城市名（默认广州），地理编码与高德算路都按它走
+  const cityName = (url.searchParams.get("city") || "广州").slice(0, 20) || "广州";
   const originLng = url.searchParams.get("originLng") || "";
   const originLat = url.searchParams.get("originLat") || "";
   const destLng = url.searchParams.get("destLng") || "";
@@ -115,15 +117,15 @@ export async function onRequestGet({ request, env }) {
     const destFromSnapshot = !!(destLng && destLat);
     const o = originFromSnapshot
       ? { name: origin, loc: `${originLng},${originLat}` }
-      : await geocode(key, origin);
+      : await geocode(key, origin, cityName);
     const d = destFromSnapshot
       ? { name: destination, loc: `${destLng},${destLat}` }
-      : await geocode(key, destination);
+      : await geocode(key, destination, cityName);
 
     const q = new URLSearchParams({
       origin: o.loc,
       destination: d.loc,
-      city: "广州",
+      city: cityName,
       strategy,
       extensions: "all",
       key,

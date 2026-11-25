@@ -21,7 +21,21 @@ const {
     />
     <title>{title}</title>
     <meta name="description" content={description} />
-    <meta name="theme-color" content="#f5f6f8" />
+    <meta name="theme-color" content="#f5f6f8" id="theme-color-meta" />
+    <script is:inline>
+      // 首屏前按 localStorage / 系统偏好定好主题，避免浅色闪一下才变深
+      (function () {
+        try {
+          var t = localStorage.getItem("bus-theme");
+          if (t !== "dark" && t !== "light") {
+            t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+          }
+          document.documentElement.dataset.theme = t;
+          var m = document.getElementById("theme-color-meta");
+          if (m) m.setAttribute("content", t === "dark" ? "#101216" : "#f5f6f8");
+        } catch (e) {}
+      })();
+    </script>
     <meta name="robots" content="noindex" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="apple-touch-icon" href="/favicon.svg" />

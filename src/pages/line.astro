@@ -11,7 +11,10 @@ const lineNo = params.get("n") || "线路";
       <a class="back" href="/">‹</a>
       <span class="line-title" id="title">{lineNo}</span>
       <span class="arrived-pill" id="arrived-pill" hidden>车来了</span>
-      <button class="fav big" id="fav-line" type="button" aria-label="收藏线路">☆</button>
+      <button class="refresh" id="line-refresh" type="button" style="margin-left:auto"><span id="line-refresh-icon">⟳</span> 刷新</button>
+      <button class="city-mini" id="city-mini" type="button">广州 ▾</button>
+      <button class="theme-btn" id="theme-btn" type="button" aria-label="切换深色模式">🌙</button>
+      <button class="fav big" id="fav-line" type="button" aria-label="收藏线路" style="margin-left:0">☆</button>
     </header>
 
     <div class="from-to">
@@ -55,7 +58,9 @@ const lineNo = params.get("n") || "线路";
     import { esc, hhmm, getJSON } from "../scripts/util.js";
     import { isFavLine, toggleLine } from "../scripts/favs.js";
     import { nearestBus, nextBus, plateTail, pickInitialStation, getTrackedTrip, setTrackedTrip } from "../scripts/watch.js";
-    import { loadAmap, createBusMap } from "../scripts/amap.js";
+    import { loadAmap, createBusMap, applyMapTheme } from "../scripts/amap.js";
+    import { openCityPicker, fetchCities } from "../scripts/city.js";
+    import { applyTheme, toggleTheme } from "../scripts/theme.js";
 
     const qp = new URLSearchParams(location.search);
     const stationName = qp.get("st") || "";
@@ -88,6 +93,10 @@ const lineNo = params.get("n") || "线路";
       switchDir: document.getElementById("switch-dir"),
       trackBar: document.getElementById("track-bar"),
       trackBtn: document.getElementById("track-btn"),
+      lineRefresh: document.getElementById("line-refresh"),
+      lineRefreshIcon: document.getElementById("line-refresh-icon"),
+      cityMini: document.getElementById("city-mini"),
+      themeBtn: document.getElementById("theme-btn"),
     };
 
     let line = null;
@@ -392,6 +401,37 @@ const lineNo = params.get("n") || "线路";
       }
     }
 
+    els.lineRefresh.addEventListener("click", () => {
+      if (els.lineRefresh.disabled) return;
+      els.lineRefresh.disabled = true;
+      els.lineRefreshIcon.style.animation = "spin 900ms linear infinite";
+      load().finally(() => {
+        els.lineRefresh.disabled = false;
+        els.lineRefreshIcon.style.animation = "";
+      });
+    });
+
+    // 城市名入口：显示本页 URL 的城市，点选后跳回首页（新城市生效）
+    (async () => {
+      const name =
+        cityId === "040"
+          ? "广州"
+          : (await fetchCities().catch(() => []))?.find((c) => c.cityId === cityId)?.name || cityId;
+      els.cityMini.textContent = `${name} ▾`;
+    })();
+    els.cityMini.addEventListener("click", () => {
+      openCityPicker(() => {
+        location.href = "/";
+      });
+    });
+
+    els.themeBtn.addEventListener("click", toggleTheme);
+    applyTheme();
+    // 切主题时线路地图实例跟着换底图
+    window.addEventListener("bus-theme-change", (ev) => {
+      if (mapObj?.map) applyMapTheme(mapObj.map, ev.detail.theme);
+    });
+
     els.switchDir.addEventListener("click", () => {
       currentDir = currentDir === "1" ? "0" : "1";
       currentLineId = flipLineId(currentLineId);
@@ -476,6 +516,7 @@ const lineNo = params.get("n") || "线路";
         lineId: currentLineId,
         dir: String(currentDir),
         stationId,
+        cityId,
         lineNo: line.no || lineNo,
         stationName: line.targetName || stationName || "",
         to: line.to || "",
