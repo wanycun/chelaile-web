@@ -64,6 +64,72 @@ function gcj(lng, lat) {
   return [p.lng, p.lat];
 }
 
+/** 两点间距离（米，等距圆柱近似；广州纬度附近误差可忽略） */
+export function distM(a, b) {
+  const kx = 111320 * Math.cos((((a[1] + b[1]) / 2) * Math.PI) / 180);
+  return Math.hypot((b[0] - a[0]) * kx, (b[1] - a[1]) * 111320);
+}
+
+/**
+ * 线路几何：按站序排好的 GCJ 路径 + 每站的沿路累计距离（米）。
+ * 注意累计距离是弦长和，比真实路长短约 10%（弯道处弦切角），
+ * 靠近的站之间误差只有几十米，够给车辆落点用。
+ */
+export function routeGeometry(stations) {
+  const sorted = [...(stations || [])]
+    .filter((s) => gcj(s.lng, s.lat))
+    .sort((a, b) => a.order - b.order);
+  const path = sorted.map((s) => gcj(s.lng, s.lat));
+  const cum = [0];
+  for (let i = 1; i < path.length; i++) cum.push(cum[i - 1] + distM(path[i - 1], path[i]));
+  return { stations: sorted, path, cum, total: cum[cum.length - 1] || 0 };
+}
+
+/** 沿路 d 米处的点（超界 clamp 到起讫站） */
+export function pointAtDistance(geom, d) {
+  const { path, cum } = geom;
+  if (!path.length) return null;
+  const dd = Math.max(0, Math.min(d, geom.total));
+  if (dd <= 0) return path[0];
+  if (dd >= geom.total) return path[path.length - 1];
+  for (let i = 1; i < cum.length; i++) {
+    if (cum[i] >= dd) {
+      const segLen = cum[i] - cum[i - 1];
+      const t = segLen === 0 ? 0 : (dd - cum[i - 1]) / segLen;
+      return [
+        path[i - 1][0] + t * (path[i][0] - path[i - 1][0]),
+        path[i - 1][1] + t * (path[i][1] - path[i - 1][1]),
+      ];
+    }
+  }
+  return path[path.length - 1];
+}
+
+/** 点到路径的最近垂足（把偏离的经纬度压回线路上） */
+export function projectOntoPath(geom, p) {
+  const { path } = geom;
+  if (!path.length) return null;
+  if (path.length === 1) return path[0];
+  const kx = 111320 * Math.cos((p[1] * Math.PI) / 180);
+  let best = null;
+  for (let i = 0; i < path.length - 1; i++) {
+    const [ax, ay] = path[i];
+    const [bx, by] = path[i + 1];
+    const dx = (bx - ax) * kx;
+    const dy = (by - ay) * 111320;
+    const l2 = dx * dx + dy * dy;
+    const t =
+      l2 === 0
+        ? 0
+        : Math.max(0, Math.min(1, ((p[0] - ax) * kx * dx + (p[1] - ay) * 111320 * dy) / l2));
+    const cx = ax + t * (bx - ax);
+    const cy = ay + t * (by - ay);
+    const dd = Math.hypot((p[0] - cx) * kx, (p[1] - cy) * 111320);
+    if (!best || dd < best[0]) best = [dd, [cx, cy]];
+  }
+  return best[1];
+}
+
 const BUS_CLUSTER_DIST = 0.004; // 约 400m 内算同一簇
 const BUS_LABEL_ZOOM = 14; // ≥14 逐辆显示时速 pill；<14 车辆只画小绿点/小徽章，站名优先
 const ST_LABEL_ZOOM = 15; // ≥15 全部站名
@@ -452,11 +518,32 @@ export async function createBusMap(el, { routes }) {
     const detailed = zoom >= BUS_LABEL_ZOOM; // ≥14 逐辆显示时速 pill
     const toPx = (pos) => map.lngLatToContainer(new AMap.LngLat(pos[0], pos[1]));
     for (const route of currentRoutes) {
-      // 车辆坐标上游已是 GCJ-02，不要再转：实测 B8 天河段，raw 距线路 65–71m，
-      // 再转一次偏 194–484m、落到南边平行的黄埔大道上（广州单次转换偏移约东 552m、南 292m）。
-      // 站点坐标是 WGS-84，仍走 gcj()（上面 buildPolylines / 站点标记处）。
+      // 车辆落点不直接用上游经纬度：实测它与上游自己的 dist/eta 对不上——
+      // 同一批车里有的像 WGS 有的像 GCJ，换算后到站距离比 dist 系统性长 1–1.8km，
+      // 经纬度本身不可靠（b97c4a4 只改 raw 仍偏离，浏览器目视未通过）。
+      // distNext（distanceToSc）是上游引擎到「驶向的站」（b.order）的沿路距离，
+      // 与 dist、eta×车速三方自洽（B8 天河段核对误差 30–45m），落点 =
+      // 该站沿路位置 − distNext，保证车落在蓝线上、且与站表 ETA 在同一位置。
+      // distNext 缺失时退到 dist（到目标站的距离），再缺失才把经纬度投影到线路上。
+      const geom = routeGeometry(route.stations);
+      const targetIdx = geom.stations.findIndex(
+        (s) => route.targetOrder && s.order === route.targetOrder,
+      );
+      const targetPos = targetIdx >= 0 ? geom.cum[targetIdx] : null;
       const buses = (route.buses || [])
-        .map((b) => ({ ...b, pos: validCoord(b.lng, b.lat) ? [b.lng, b.lat] : null }))
+        .map((b) => {
+          let pos = null;
+          const nextIdx = geom.stations.findIndex((s) => s.order === b.order);
+          if (nextIdx >= 0 && Number.isFinite(b.distNext) && b.distNext >= 0) {
+            pos = pointAtDistance(geom, geom.cum[nextIdx] - b.distNext);
+          } else if (targetPos !== null && Number.isFinite(b.dist) && b.dist >= 0) {
+            pos = pointAtDistance(geom, targetPos - b.dist);
+          } else {
+            const g = gcj(b.lng, b.lat);
+            if (g) pos = projectOntoPath(geom, g) || g;
+          }
+          return { ...b, pos };
+        })
         .filter((b) => b.pos);
       if (detailed) {
         // 高缩放逐辆显示；坐标重合的几辆车会叠在同一个像素上，环形散开
