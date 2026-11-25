@@ -166,39 +166,92 @@ const lineNo = params.get("n") || "线路";
       els.trackCount.textContent = String(data.buses.length);
     }
 
-    function busBadge(b) {
+    function busLabel(b) {
       const tail = plateTail(b.plate);
       const speed = typeof b.speed === "number" && b.speed > 0 ? `${Math.round(b.speed)} km/h` : "";
       const label = tail || speed || "";
-      return `<span class="bus-badge">🚌${label ? ` ${esc(label)}` : ""}</span>`;
+      return `🚌${label ? ` ${label}` : ""}`;
+    }
+
+    // 两站间距（米）：算车在两站之间的位置用
+    function gapM(a, b) {
+      if (!a || !b) return 0;
+      const kx = 111320 * Math.cos((((a.lat + b.lat) / 2) * Math.PI) / 180);
+      return Math.hypot((b.lng - a.lng) * kx, (b.lat - a.lat) * 111320);
     }
 
     function renderRoute(data) {
-      const byOrder = new Map();
-      for (const b of data.buses) {
-        if (!byOrder.has(b.order)) byOrder.set(b.order, []);
-        byOrder.get(b.order).push(b);
-      }
       const nearest = nearestBus(data);
       const refOrder = nearest ? nearest.order : Infinity;
 
       els.route.innerHTML = data.stations
         .map((s, i) => {
-          const badges = (byOrder.get(s.order) || []).map(busBadge).join("");
           const isTarget = line.targetOrder && s.order === line.targetOrder;
           const cls = isTarget ? "current" : s.order < refOrder ? "passed" : "ahead";
           const num = String(i + 1).padStart(2, "0");
           return `
-            <div class="stop ${cls}">
+            <div class="stop ${cls}" data-order="${s.order}">
               <span class="stop-num">${num}</span>
               <span class="stop-dot"></span>
               <span class="stop-name">${esc(s.name)}${s.metropolitan ? '<span class="sub">地铁</span>' : ""}${
                 isTarget ? '<span class="waiting">候车中</span>' : ""
               }</span>
-              ${badges}
             </div>`;
         })
         .join("");
+
+      paintBusesOnLine(data);
+    }
+
+    // 把车画在竖线上、两站之间：落点按到下一站的距离算
+    // （distNext / 两站间距），不再贴在站名右边；同一段里多辆车上下错开。
+    function paintBusesOnLine(data) {
+      const stops = [...els.route.querySelectorAll(".stop")];
+      if (!stops.length) return;
+      const routeRect = els.route.getBoundingClientRect();
+      const dotY = (el) => {
+        const r = el.querySelector(".stop-dot").getBoundingClientRect();
+        return r.top - routeRect.top + r.height / 2;
+      };
+      const byOrder = new Map(data.stations.map((s) => [s.order, s]));
+      const elByOrder = new Map(stops.map((el) => [Number(el.dataset.order), el]));
+      const groups = new Map();
+      for (const b of data.buses) {
+        const next = byOrder.get(b.order);
+        if (!next || !elByOrder.has(b.order)) continue;
+        const prev = byOrder.get(b.order - 1) || null;
+        const key = `${prev ? prev.order : 0}->${next.order}`;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push({ b, next, prev });
+      }
+      for (const items of groups.values()) {
+        const placed = items.map(({ b, next, prev }) => {
+          const gap = gapM(prev, next);
+          const f =
+            prev && gap > 0 && Number.isFinite(b.distNext) && b.distNext >= 0
+              ? Math.max(0.06, Math.min(0.94, 1 - b.distNext / gap))
+              : 0.5;
+          return { b, next, prev, f };
+        });
+        placed.sort((x, y) => y.f - x.f);
+        placed.forEach((it, i) => {
+          const nextEl = elByOrder.get(it.next.order);
+          let y;
+          if (it.prev && elByOrder.has(it.prev.order)) {
+            const prevEl = elByOrder.get(it.prev.order);
+            y = dotY(prevEl) + it.f * (dotY(nextEl) - dotY(prevEl));
+          } else {
+            y = dotY(nextEl) - 26;
+          }
+          const off = (i - (placed.length - 1) / 2) * 32;
+          const el = document.createElement("span");
+          el.className = "bus-badge bus-on-line";
+          el.textContent = busLabel(it.b);
+          el.style.left = "61px";
+          el.style.top = `${Math.round(y + off)}px`;
+          els.route.appendChild(el);
+        });
+      }
     }
 
     function render(data) {

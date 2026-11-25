@@ -749,6 +749,7 @@ select.station-pill:focus { outline: 2px solid var(--brand); outline-offset: 1px
 
 /* ── 线路页走向条 ── */
 .route {
+  position: relative;
   display: flex;
   flex-direction: column;
   margin-top: 14px;
@@ -856,6 +857,15 @@ select.station-pill:focus { outline: 2px solid var(--brand); outline-offset: 1px
   font-size: 13px;
   font-weight: 800;
   font-variant-numeric: tabular-nums;
+}
+
+/* 线路走向条上的车：绝对定位在竖线上、两站之间，位置由 JS 按到站距离算 */
+.bus-on-line {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  z-index: 2;
+  white-space: nowrap;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
 }
 
 /* ── 状态 ── */
