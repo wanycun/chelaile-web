@@ -452,8 +452,11 @@ export async function createBusMap(el, { routes }) {
     const detailed = zoom >= BUS_LABEL_ZOOM; // ≥14 逐辆显示时速 pill
     const toPx = (pos) => map.lngLatToContainer(new AMap.LngLat(pos[0], pos[1]));
     for (const route of currentRoutes) {
+      // 车辆坐标上游已是 GCJ-02，不要再转：实测 B8 天河段，raw 距线路 65–71m，
+      // 再转一次偏 194–484m、落到南边平行的黄埔大道上（广州单次转换偏移约东 552m、南 292m）。
+      // 站点坐标是 WGS-84，仍走 gcj()（上面 buildPolylines / 站点标记处）。
       const buses = (route.buses || [])
-        .map((b) => ({ ...b, pos: gcj(b.lng, b.lat) }))
+        .map((b) => ({ ...b, pos: validCoord(b.lng, b.lat) ? [b.lng, b.lat] : null }))
         .filter((b) => b.pos);
       if (detailed) {
         // 高缩放逐辆显示；坐标重合的几辆车会叠在同一个像素上，环形散开
