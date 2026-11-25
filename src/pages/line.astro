@@ -94,6 +94,8 @@ const lineNo = params.get("n") || "线路";
     let lastData = null;
     let mapObj = null;
     let mapOpen = false;
+    let mapRouteKey = "";
+    let stationResolved = false; // 上车站兜底只做一次，避免反复重查
     const favId = () => `${currentLineId}#${currentDir}`;
     // 方向编码在 lineId 末尾：…-1 / …-0
     const flipLineId = (id) =>
@@ -193,12 +195,16 @@ const lineNo = params.get("n") || "线路";
       line = data.line;
       lastData = data;
       els.title.textContent = line.no || lineNo;
+      document.title = `${line.no || lineNo} · 车来了`;
       els.fromTo.innerHTML = `${esc(line.from || "—")} <span class="arrow">→</span> ${esc(line.to || "—")}`;
       paintFav();
       paintTrackBtn();
 
       const nearest = nearestBus(data);
-      els.arrivedPill.hidden = !(nearest && nearest.eta >= 0 && nearest.eta <= 180);
+      // ETA 缺失时（目标站无效）退化为「有车正驶向目标站」即算车来了
+      const atTarget =
+        !nearest && line.targetOrder && data.buses.some((b) => b.order === line.targetOrder);
+      els.arrivedPill.hidden = !(nearest ? nearest.eta <= 180 : atTarget);
 
       const meta = [];
       if (line.first && line.last) meta.push(`运营 ${line.first}–${line.last}`);
@@ -223,7 +229,18 @@ const lineNo = params.get("n") || "线路";
       }
       els.msg.textContent = data.buses.length ? "" : "暂时没有车辆在线（可能未发车或已过运营时段）";
       els.msg.className = "msg";
-      if (mapOpen) rebuildMap();
+      if (mapOpen) {
+        const key = `${currentLineId}|${currentDir}`;
+        if (mapObj && mapRouteKey === key) {
+          // 同线路刷新只原地更新车辆与目标站，不重建、不重新 fit
+          mapObj.updateBuses([
+            { stations: lastData.stations, buses: lastData.buses, targetOrder: line.targetOrder || 0 },
+          ]);
+        } else {
+          mapRouteKey = key;
+          rebuildMap();
+        }
+      }
     }
 
     async function rebuildMap() {
@@ -232,6 +249,7 @@ const lineNo = params.get("n") || "线路";
         mapObj.destroy();
         mapObj = null;
       }
+      mapRouteKey = `${currentLineId}|${currentDir}`;
       try {
         await loadAmap();
         mapObj = await createBusMap(els.lineMap, {
@@ -244,13 +262,69 @@ const lineNo = params.get("n") || "线路";
       }
     }
 
+    // 线路数据缓存：60 秒内先画缓存主体，再后台刷新（重复打开不再看骨架）
+    const LINE_CACHE = "cl-line-v1";
+
+    function lineCacheKey() {
+      return `${currentLineId}|${currentDir}|${stationId}`;
+    }
+
+    function readLineCache() {
+      try {
+        const c = JSON.parse(sessionStorage.getItem(LINE_CACHE) || "{}");
+        const hit = c[lineCacheKey()];
+        if (hit && Date.now() - hit.t < 60_000) return hit.data;
+      } catch {
+        /* ignore */
+      }
+      return null;
+    }
+
+    function writeLineCache(data) {
+      try {
+        const c = JSON.parse(sessionStorage.getItem(LINE_CACHE) || "{}");
+        c[lineCacheKey()] = { t: Date.now(), data };
+        sessionStorage.setItem(LINE_CACHE, JSON.stringify(c));
+      } catch {
+        /* ignore */
+      }
+    }
+
     async function load() {
+      const cached = readLineCache();
+      if (cached) render(cached);
       try {
         const q = new URLSearchParams({ lineId: currentLineId, dir: currentDir, cityId, stationId });
-        render(await getJSON(`/api/line?${q}`));
+        const data = await getJSON(`/api/line?${q}`);
+        // 上车站兜底：URL 没带站，或带的站不在本方向时，尽量落到一个有效站
+        // （直接打开无 stationId 时上游默认给终点站；sId 对不上时按站名再找一次）
+        if (!data.line.targetMatched && data.stations?.length && !stationResolved) {
+          stationResolved = true;
+          let fallback = null;
+          if (stationName) fallback = data.stations.find((s) => s.name === stationName) || null;
+          if (!fallback && !stationId) fallback = data.stations[0];
+          if (fallback) {
+            stationId = fallback.sId;
+            const qq = new URLSearchParams(location.search);
+            qq.set("stationId", stationId);
+            qq.set("st", fallback.name);
+            history.replaceState(null, "", `${location.pathname}?${qq.toString()}`);
+            els.trackBar.hidden = false;
+            paintTrackBtn();
+            load();
+            return;
+          }
+        }
+        render(data);
+        writeLineCache(data);
       } catch (err) {
-        els.msg.textContent = `加载失败：${err.message}`;
-        els.msg.className = "msg err";
+        if (!cached) {
+          els.msg.textContent = `加载失败：${err.message}`;
+          els.msg.className = "msg err";
+        } else {
+          els.msg.textContent = "更新失败，显示的是缓存数据";
+          els.msg.className = "msg";
+        }
       }
     }
 
@@ -275,6 +349,20 @@ const lineNo = params.get("n") || "线路";
       history.replaceState(null, "", `${location.pathname}?${q.toString()}`);
       els.trackBar.hidden = !stationId;
       paintTrackBtn();
+      // 立即按新站重绘（不等网络）：候车中位置 + 第 N 站 + 倒计时占位，ETA 随后刷新
+      if (lastData && line) {
+        const st = lastData.stations.find((s) => s.sId === stationId);
+        if (st) {
+          line = { ...line, targetOrder: st.order, targetName: st.name };
+          els.trackCard.hidden = false;
+          els.trackOrder.textContent = `第 ${st.order} 站`;
+          els.trackEta.textContent = "更新中…";
+          els.trackEta.classList.remove("none");
+          els.trackMeta.textContent = "";
+          els.trackNext.textContent = "";
+          renderRoute(lastData);
+        }
+      }
       load();
     });
 
@@ -330,6 +418,7 @@ const lineNo = params.get("n") || "线路";
       paintTrackBtn();
     });
 
+    loadAmap().catch(() => {}); // 预加载高德脚本，点开地图时不再等
     load();
     setInterval(() => {
       if (document.visibilityState === "visible") load();

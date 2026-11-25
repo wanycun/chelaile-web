@@ -216,6 +216,34 @@ a.watch-card:hover { box-shadow: 0 2px 4px rgba(16, 24, 40, 0.06), 0 12px 32px r
   gap: 10px;
 }
 
+.watch-pills {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* 盯梢卡线路名 */
+.line-pill {
+  flex: none;
+  padding: 7px 12px;
+  border-radius: 10px;
+  background: var(--brand-soft);
+  color: var(--brand-ink);
+  font-size: 15px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+/* 盯梢分组小标题（早班组 / 晚班组） */
+.watch-group {
+  margin: 16px 2px 10px;
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--ink-2);
+}
+.watch-group:first-child { margin-top: 2px; }
+
 .station-pill {
   display: inline-flex;
   align-items: center;
@@ -607,6 +635,9 @@ select.station-pill:focus { outline: 2px solid var(--brand); outline-offset: 1px
   color: var(--red);
   text-align: center;
 }
+
+/* 地图低缩放时只显示站点圆点，隐藏站名（由 amap.js 按缩放切换 zoom-low） */
+.map-box.zoom-low .st-label { display: none; }
 
 /* ── 线路页走向条 ── */
 .route {
