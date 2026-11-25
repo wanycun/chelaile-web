@@ -110,6 +110,31 @@ const LABEL_DY = 26; // 标签竖向交错的偏移量（px）；标签盒高约
 const LABEL_HALF_H = 12;
 
 /**
+ * 错开标签的引线几何（纯函数，可单测）：引线是标签标记自身 HTML 里的一条竖线，
+ * 不再用 AMap.Polyline——上一轮 Polyline 方案在真实浏览器里一条都看不见（mock 单测
+ * 说画了也没用），图层/坐标换算/重绘清除里有没摸到的坑，直接弃用。
+ * 几何（以标签内容左上角为原点，标签盒高 24px、半高 12px）：
+ * - 线宽 2px、x 位置 = 圆点中心 x（side right 时在标签盒左侧 dot/2+5 px 外，
+ *   side left 时在右侧同等距离外），线尾正好落在圆点中心上；
+ * - 线从标签盒垂直中心出发、长度 |dy|：dy<0（标签在上）时 top=12，尾 = 12+26=38
+ *   = 圆点中心相对 y（-dy+12）；dy>0（标签在下）时 top=-14，尾 = -14+26=12
+ *   = 标签盒垂直中心。线在标签盒外的可见段正好是标签边沿到圆点的 14px 间隙，
+ *   不压文字。
+ * dy=0 的贴点标签不画线，返回 null。
+ */
+export function leaderGeometry(placement, dot, labelWidth) {
+  if (!placement || placement.dy === 0) return null;
+  const dotRelX =
+    placement.side === "right" ? -(dot / 2 + 5) : labelWidth + dot / 2 + 5;
+  const dotRelY = -placement.dy + LABEL_HALF_H;
+  return {
+    left: dotRelX - 1, // 2px 宽的线，左缘 = 圆点中心 x - 1
+    top: Math.min(dotRelY, LABEL_HALF_H),
+    height: Math.abs(placement.dy),
+  };
+}
+
+/**
  * 给站名标签选落点（纯函数，可单测）：
  * 依次试 右 / 左 / 右上 / 左上 / 右下 / 左下，落点盒须在容器内且不与 obstacles（已保留的
  * 标签盒）重叠；全部失败返回 null（只留圆点，站名靠 hover 的 title 看）。
@@ -145,7 +170,9 @@ export function placeLabel(anchor, dot, labelWidth, obstacles, size) {
  * routes: [{ stations: [{name, order, lat, lng}], buses: [{lat, lng, speed, plate, order}], targetOrder }]
  * 站点连线 + 站点标记（圆点；站名按缩放显示：≥15 全显，10–14 稀疏显示，<10 只留圆点）+
  * 车辆标记（<14 只画小绿点/小徽章，≥14 逐辆显示时速 pill；坐标重合的车点簇后环形散开 spiderfy）。
- * 标签优先、车辆让路：站名标签防撞只看标签盒，撞标签的车辆标记直接不画；错开的标签带引线连回圆点。
+ * 标签优先、车辆让路：站名标签防撞只看标签盒，撞标签的车辆标记直接不画；错开的标签
+ * 在标记 HTML 里带一条竖线引线连回自己的圆点（与标签同一 Marker、层级 400/500，
+ * 不用 Polyline、不做经纬度换算，缩放/平移/重绘都与标签同生同灭）。
  * 定 bounds 只按站点连线，不含车辆标记；updateBuses() 原地刷新标记，不动视野。
  * 返回 { map, updateBuses(routes), destroy() }。
  */
@@ -156,7 +183,6 @@ export async function createBusMap(el, { routes }) {
   let stationMarkers = [];
   let busMarkers = [];
   let labelBoxes = []; // 本轮已保留的站名标签盒（屏幕坐标），供车辆标记让路用
-  let leaderOverlays = []; // 错开标签的引线
   let currentRoutes = routes || [];
   let expandedClusterKey = null; // 正在环形散开的簇（key = 簇中心经纬度），缩放/刷新后收起
 
@@ -197,14 +223,19 @@ export async function createBusMap(el, { routes }) {
   const stationDotHtml = (dot) =>
     `<span style="flex:none;width:${dot}px;height:${dot}px;border-radius:50%;background:#1B5BFF;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.35)"></span>`;
 
-  // 标签单独成标记：位置由 marker 的经纬度 + offset 定，不再用 translateY 错位
-  const stationLabelHtml = (name, isTarget) =>
-    `<span class="st-label" style="background:rgba(255,255,255,.94);border:1px solid #d1d5db;border-radius:6px;padding:2px 7px;font-size:11.5px;font-weight:${isTarget ? 800 : 600};color:${isTarget ? "#1D4ED8" : "#374151"};white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.15)">${esc(name)}</span>`;
+  // 标签单独成标记：位置由 marker 的经纬度 + offset 定，不再用 translateY 错位。
+  // 错开的标签（dy≠0）在标记 HTML 里自带一条竖线引线：2px 宽 #6B7280 实色，
+  // 从标签盒垂直中心出发、长 |dy|、尾端正好落在圆点中心上（见 leaderGeometry）。
+  // 引线与标签同属一个 Marker（层级 400/500），不存在跨图层被盖、不存在经纬度
+  // 换算，缩放/平移后高德自己带着标记走，重绘时与标签同生同灭。
+  const stationLabelHtml = (name, isTarget, leader) => {
+    const label = `<span class="st-label" style="position:relative;z-index:1;background:rgba(255,255,255,.94);border:1px solid #d1d5db;border-radius:6px;padding:2px 7px;font-size:11.5px;font-weight:${isTarget ? 800 : 600};color:${isTarget ? "#1D4ED8" : "#374151"};white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.15)">${esc(name)}</span>`;
+    if (!leader) return label;
+    return `<span style="position:relative;display:inline-block">${label}<span style="position:absolute;display:block;width:2px;height:${leader.height}px;left:${leader.left}px;top:${leader.top}px;background:#6B7280"></span></span>`;
+  };
 
   function renderStationMarkers() {
     removeMarkers(stationMarkers);
-    for (const o of leaderOverlays) map.remove(o);
-    leaderOverlays.length = 0;
     const zoom = map.getZoom();
     const size = map.getSize();
     const container = { width: size.width, height: size.height };
@@ -278,21 +309,9 @@ export async function createBusMap(el, { routes }) {
       const cx = (placement.box.x0 + placement.box.x1) / 2;
       const cy = (placement.box.y0 + placement.box.y1) / 2;
       const lp = map.containerToLngLat(new AMap.Pixel(cx, cy));
-      // 标签被顶到线上方/下方时加引线连到自己的圆点；引线 2px #6B7280 不透明度
-      // 0.9——之前 1px #9CA3AF 0.55 在浅色底图上肉眼基本看不见
-      if (placement.dy !== 0) {
-        const leader = new AMap.Polyline({
-          path: [pos, [lp.lng, lp.lat]],
-          strokeColor: "#6B7280",
-          strokeWeight: 2,
-          strokeOpacity: 0.9,
-        });
-        map.add(leader);
-        leaderOverlays.push(leader);
-      }
       const labelMarker = new AMap.Marker({
         position: [lp.lng, lp.lat],
-        content: stationLabelHtml(s.name, isTarget),
+        content: stationLabelHtml(s.name, isTarget, leaderGeometry(placement, dot, labelWidth)),
         offset: new AMap.Pixel(-Math.round(labelWidth / 2), -LABEL_HALF_H),
         title: s.name,
         anchor: "top-left",
