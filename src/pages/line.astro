@@ -1,4 +1,4 @@
-﻿---
+---
 import Base from "../layouts/Base.astro";
 
 const params = Astro.url.searchParams;
@@ -7,59 +7,93 @@ const lineNo = params.get("n") || "线路";
 
 <Base title={`${lineNo} 路 · 车来了`}>
   <main class="wrap">
-    <header class="top">
-      <div style="min-width:0">
-        <a class="back" href="/">← 附近站点</a>
-        <div class="city"><span class="badge inline" id="no">{lineNo}</span> <span id="dir-txt">开往 —</span></div>
-        <div class="city-sub" id="status">加载中…</div>
-      </div>
+    <header class="line-head">
+      <a class="back" href="/">‹</a>
+      <span class="line-title" id="title">{lineNo}</span>
+      <span class="arrived-pill" id="arrived-pill" hidden>车来了</span>
       <button class="fav big" id="fav-line" type="button" aria-label="收藏线路">☆</button>
     </header>
 
-    <button class="switch-dir" id="switch-dir" type="button">
-      <span class="sw-ico">⇄</span>
-      <span id="switch-to">换向</span>
-    </button>
+    <div class="from-to">
+      <span id="from-to">— → —</span>
+      <button class="switch-pill" id="switch-dir" type="button">⇄ 换向</button>
+    </div>
 
+    <div class="line-meta" id="meta"></div>
     <p class="notice" id="notice" hidden></p>
 
-    <section class="arrivals" id="arrivals" hidden></section>
-    <section class="line-meta" id="meta"></section>
+    <section class="watch-card" id="track-card" hidden style="margin-top:14px">
+      <div class="watch-top">
+        <select class="station-pill" id="station-select" aria-label="选择上车站"></select>
+        <span class="watch-order" id="track-order"></span>
+      </div>
+      <div class="watch-eta" id="track-eta"></div>
+      <div class="watch-meta" id="track-meta"></div>
+      <div class="watch-div"></div>
+      <div class="watch-foot">
+        <span class="watch-next" id="track-next"></span>
+        <button class="watch-link" id="track-view" type="button" style="background:none;border:0;padding:0;font:inherit;cursor:pointer">全线 <span id="track-count">0</span> 辆车在途 · 查看</button>
+      </div>
+    </section>
 
-    <div class="list route" id="route">
+    <button class="map-toggle" id="map-toggle" type="button">🗺 在地图上看</button>
+    <div class="map-box" id="line-map" hidden></div>
+    <p class="map-err" id="map-err" hidden></p>
+
+    <div class="route" id="route">
       <div class="skeleton"></div>
       <div class="skeleton"></div>
     </div>
     <p class="msg" id="msg"></p>
+
+    <div class="track-bar" id="track-bar" hidden>
+      <button class="track-btn" id="track-btn" type="button">▶ 追踪这班车</button>
+    </div>
   </main>
 
   <script>
-    import { esc, hhmm, fmtDist, fmtEta, getJSON } from "../scripts/util.js";
+    import { esc, hhmm, getJSON } from "../scripts/util.js";
     import { isFavLine, toggleLine } from "../scripts/favs.js";
+    import { nearestBus, nextBus, plateTail, getTrackedTrip, setTrackedTrip } from "../scripts/watch.js";
+    import { loadAmap, createBusMap } from "../scripts/amap.js";
 
     const qp = new URLSearchParams(location.search);
     const stationName = qp.get("st") || "";
     let currentLineId = qp.get("lineId") || "";
     let currentDir = qp.get("dir") || "1";
     const cityId = qp.get("cityId") || "040";
-    const stationId = qp.get("stationId") || "";
+    let stationId = qp.get("stationId") || "";
     const lineNo = qp.get("n") || "";
 
     const els = {
-      no: document.getElementById("no"),
-      dirTxt: document.getElementById("dir-txt"),
-      status: document.getElementById("status"),
+      title: document.getElementById("title"),
+      arrivedPill: document.getElementById("arrived-pill"),
+      fromTo: document.getElementById("from-to"),
       meta: document.getElementById("meta"),
-      arrivals: document.getElementById("arrivals"),
+      notice: document.getElementById("notice"),
+      trackCard: document.getElementById("track-card"),
+      stationSelect: document.getElementById("station-select"),
+      trackOrder: document.getElementById("track-order"),
+      trackEta: document.getElementById("track-eta"),
+      trackMeta: document.getElementById("track-meta"),
+      trackNext: document.getElementById("track-next"),
+      trackView: document.getElementById("track-view"),
+      trackCount: document.getElementById("track-count"),
+      mapToggle: document.getElementById("map-toggle"),
+      lineMap: document.getElementById("line-map"),
+      mapErr: document.getElementById("map-err"),
       route: document.getElementById("route"),
       msg: document.getElementById("msg"),
       fav: document.getElementById("fav-line"),
       switchDir: document.getElementById("switch-dir"),
-      switchTo: document.getElementById("switch-to"),
-      notice: document.getElementById("notice"),
+      trackBar: document.getElementById("track-bar"),
+      trackBtn: document.getElementById("track-btn"),
     };
 
     let line = null;
+    let lastData = null;
+    let mapObj = null;
+    let mapOpen = false;
     const favId = () => `${currentLineId}#${currentDir}`;
     // 方向编码在 lineId 末尾：…-1 / …-0
     const flipLineId = (id) =>
@@ -71,73 +105,85 @@ const lineNo = params.get("n") || "线路";
       els.fav.classList.toggle("on", on);
     }
 
-    /** 最近三班：到「我这一站」还有多久、还有多远 */
-    function renderArrivals(data) {
+    function paintTrackBtn() {
+      const trip = getTrackedTrip();
+      const tracked =
+        trip && trip.lineId === currentLineId && trip.dir === String(currentDir) && trip.stationId === stationId;
+      if (tracked) {
+        els.trackBtn.textContent = "✓ 已追踪 · 去首页查看";
+        els.trackBtn.classList.add("done");
+      } else {
+        els.trackBtn.textContent = "▶ 追踪这班车";
+        els.trackBtn.classList.remove("done");
+      }
+    }
+
+    /** 追踪卡：上车站下拉 + 大字倒计时 + 下一辆 + 全线在途 */
+    function renderTrackCard(data) {
       if (!line.targetOrder || !line.targetName) {
-        els.arrivals.hidden = true;
+        els.trackCard.hidden = true;
         return;
       }
-      const target = line.targetName;
-      const list = data.buses.filter((b) => b.eta >= 0 || b.dist > 0).slice(0, 3);
+      els.trackCard.hidden = false;
+      els.trackOrder.textContent = `第 ${line.targetOrder} 站`;
 
-      if (!list.length) {
-        els.arrivals.hidden = true;
-        return;
+      const bus = nearestBus(data);
+      const next = nextBus(data);
+      if (!bus) {
+        els.trackEta.textContent = "暂无车辆";
+        els.trackEta.classList.add("none");
+        els.trackMeta.textContent = "";
+      } else {
+        els.trackEta.classList.remove("none");
+        if (bus.eta < 60) {
+          els.trackEta.textContent = "到站了";
+        } else {
+          els.trackEta.innerHTML = `${Math.max(1, Math.round(bus.eta / 60))}<span class="eta-unit">分钟</span>`;
+        }
+        const meta = [];
+        const left = line.targetOrder && bus.order ? line.targetOrder - bus.order : 0;
+        if (left > 0) meta.push(`还有 ${left} 站`);
+        const tail = plateTail(bus.plate);
+        if (tail) meta.push(tail);
+        if (typeof bus.speed === "number" && bus.speed > 0) meta.push(`${Math.round(bus.speed)} km/h`);
+        els.trackMeta.textContent = meta.join(" · ");
       }
-      els.arrivals.hidden = false;
+      const leftNext = next && line.targetOrder && next.order ? line.targetOrder - next.order : 0;
+      els.trackNext.textContent =
+        next && next.eta >= 0 ? `下一辆 ${Math.max(1, Math.round(next.eta / 60))} 分钟 · ${leftNext} 站` : "";
+      els.trackCount.textContent = String(data.buses.length);
+    }
 
-      const rows = list
-        .map((b, i) => {
-          const eta = fmtEta(b.eta);
-          const left = line.targetOrder && b.order ? line.targetOrder - b.order : 0;
-          const meta = [];
-          if (left > 0) meta.push(`还有 ${left} 站`);
-          if (b.dist > 0) meta.push(fmtDist(b.dist));
-          return `
-            <div class="arr-row">
-              <span class="arr-idx">${i + 1}</span>
-              <span class="arr-main">
-                <span class="num ${eta.cls}">${eta.text}</span>${eta.unit ? `<span class="unit">${eta.unit}</span>` : ""}
-              </span>
-              <span class="arr-meta">${esc(meta.join(" · ")) || "—"}</span>
-            </div>`;
-        })
-        .join("");
-
-      els.arrivals.innerHTML = `
-        <div class="arr-head">到 ${esc(target)} 最近 ${list.length} 班</div>
-        ${rows}`;
+    function busBadge(b) {
+      const tail = plateTail(b.plate);
+      const speed = typeof b.speed === "number" && b.speed > 0 ? `${Math.round(b.speed)}` : "";
+      const label = tail || speed || "";
+      return `<span class="bus-badge">🚌${label ? ` ${esc(label)}` : ""}</span>`;
     }
 
     function renderRoute(data) {
-      // 车按「正在驶向的站序」分组，渲染在该站上方 → 视觉上就在两站之间
       const byOrder = new Map();
       for (const b of data.buses) {
         if (!byOrder.has(b.order)) byOrder.set(b.order, []);
         byOrder.get(b.order).push(b);
       }
+      const nearest = nearestBus(data);
+      const refOrder = nearest ? nearest.order : Infinity;
 
       els.route.innerHTML = data.stations
         .map((s, i) => {
-          const buses = byOrder.get(s.order) || [];
-          const busRows = buses
-            .map(
-              (b) =>
-                `<div class="bus-row"><span class="bus-ico">🚌</span><span class="bus-txt">距 ${esc(s.name)}${
-                  b.distNext > 0 ? ` ${fmtDist(b.distNext)}` : " 即将到站"
-                }</span></div>`,
-            )
-            .join("");
-          const first = i === 0;
-          const last = i === data.stations.length - 1;
+          const badges = (byOrder.get(s.order) || []).map(busBadge).join("");
           const isTarget = line.targetOrder && s.order === line.targetOrder;
+          const cls = isTarget ? "current" : s.order < refOrder ? "passed" : "ahead";
+          const num = String(i + 1).padStart(2, "0");
           return `
-            ${busRows}
-            <div class="stop${isTarget ? " target" : ""}">
-              <span class="stop-dot${first || last ? " end" : ""}"></span>
+            <div class="stop ${cls}">
+              <span class="stop-num">${num}</span>
+              <span class="stop-dot"></span>
               <span class="stop-name">${esc(s.name)}${s.metropolitan ? '<span class="sub">地铁</span>' : ""}${
-                isTarget ? '<span class="sub target">本站</span>' : ""
+                isTarget ? '<span class="waiting">候车中</span>' : ""
               }</span>
+              ${badges}
             </div>`;
         })
         .join("");
@@ -145,20 +191,29 @@ const lineNo = params.get("n") || "线路";
 
     function render(data) {
       line = data.line;
-      els.no.textContent = line.no || lineNo;
-      els.dirTxt.textContent = `开往 ${line.to || "—"}`;
-      els.switchTo.textContent = line.from ? `往 ${line.from}` : "换向";
-      els.status.textContent = `更新于 ${hhmm(data.updatedAt)} · 每 20 秒刷新`;
+      lastData = data;
+      els.title.textContent = line.no || lineNo;
+      els.fromTo.innerHTML = `${esc(line.from || "—")} <span class="arrow">→</span> ${esc(line.to || "—")}`;
       paintFav();
+      paintTrackBtn();
+
+      const nearest = nearestBus(data);
+      els.arrivedPill.hidden = !(nearest && nearest.eta >= 0 && nearest.eta <= 180);
 
       const meta = [];
-      if (line.first && line.last) meta.push(`首末班 ${line.first}–${line.last}`);
-      if (line.price) meta.push(line.price);
+      if (line.first && line.last) meta.push(`运营 ${line.first}–${line.last}`);
+      if (line.price) meta.push(`票价 ${line.price}`);
       if (line.count) meta.push(`共 ${line.count} 站`);
-      meta.push(`当前 ${data.buses.length} 辆车`);
-      els.meta.innerHTML = meta.map((m) => `<span>${esc(m)}</span>`).join("");
+      meta.push(`更新于 ${hhmm(data.updatedAt)}`);
+      els.meta.innerHTML = meta.map((m) => esc(m)).join(" · ");
 
-      renderArrivals(data);
+      // 上车站下拉：全部站点，当前目标站选中
+      els.stationSelect.innerHTML = data.stations
+        .map((s) => `<option value="${esc(s.sId)}" ${line.targetOrder === s.order ? "selected" : ""}>${esc(s.name)}站上车</option>`)
+        .join("");
+      els.trackBar.hidden = !stationId;
+
+      renderTrackCard(data);
       renderRoute(data);
 
       const missed = !line.targetMatched && !!stationId;
@@ -168,6 +223,25 @@ const lineNo = params.get("n") || "线路";
       }
       els.msg.textContent = data.buses.length ? "" : "暂时没有车辆在线（可能未发车或已过运营时段）";
       els.msg.className = "msg";
+      if (mapOpen) rebuildMap();
+    }
+
+    async function rebuildMap() {
+      if (!lastData) return;
+      if (mapObj) {
+        mapObj.destroy();
+        mapObj = null;
+      }
+      try {
+        await loadAmap();
+        mapObj = await createBusMap(els.lineMap, {
+          routes: [{ stations: lastData.stations, buses: lastData.buses, targetOrder: line.targetOrder || 0 }],
+        });
+        els.mapErr.hidden = true;
+      } catch (err) {
+        els.mapErr.textContent = err.message || "地图加载失败";
+        els.mapErr.hidden = false;
+      }
     }
 
     async function load() {
@@ -188,7 +262,35 @@ const lineNo = params.get("n") || "线路";
       q.set("lineId", currentLineId);
       history.replaceState(null, "", `${location.pathname}?${q.toString()}`);
       paintFav();
+      paintTrackBtn();
       load();
+    });
+
+    els.stationSelect.addEventListener("change", () => {
+      stationId = els.stationSelect.value;
+      const q = new URLSearchParams(location.search);
+      q.set("stationId", stationId);
+      const name = els.stationSelect.options[els.stationSelect.selectedIndex]?.textContent?.replace(/站上车$/, "") || "";
+      q.set("st", name);
+      history.replaceState(null, "", `${location.pathname}?${q.toString()}`);
+      els.trackBar.hidden = !stationId;
+      paintTrackBtn();
+      load();
+    });
+
+    els.trackView.addEventListener("click", () => {
+      els.route.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+
+    els.mapToggle.addEventListener("click", async () => {
+      mapOpen = !mapOpen;
+      els.lineMap.hidden = !mapOpen;
+      els.mapToggle.textContent = mapOpen ? "收起地图" : "🗺 在地图上看";
+      if (mapOpen) rebuildMap();
+      else if (mapObj) {
+        mapObj.destroy();
+        mapObj = null;
+      }
     });
 
     els.fav.addEventListener("click", () => {
@@ -200,8 +302,32 @@ const lineNo = params.get("n") || "线路";
         dir: Number(line.dir ?? currentDir),
         cityId,
         stationId,
+        st: line.targetName || stationName || "",
       });
       paintFav();
+    });
+
+    els.trackBtn.addEventListener("click", () => {
+      if (!stationId || !line) return;
+      const trip = getTrackedTrip();
+      if (
+        trip &&
+        trip.lineId === currentLineId &&
+        trip.dir === String(currentDir) &&
+        trip.stationId === stationId
+      ) {
+        location.href = "/";
+        return;
+      }
+      setTrackedTrip({
+        lineId: currentLineId,
+        dir: String(currentDir),
+        stationId,
+        lineNo: line.no || lineNo,
+        stationName: line.targetName || stationName || "",
+        to: line.to || "",
+      });
+      paintTrackBtn();
     });
 
     load();

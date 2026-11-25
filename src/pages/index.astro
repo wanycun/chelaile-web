@@ -6,7 +6,7 @@ import Base from "../layouts/Base.astro";
   <main class="wrap">
     <header class="top">
       <div>
-        <div class="city" id="city">附近站点</div>
+        <div class="city" id="city">广州 <span class="caret">▾</span></div>
         <div class="city-sub" id="status">正在定位…</div>
       </div>
       <button class="refresh" id="refresh" type="button">
@@ -14,10 +14,39 @@ import Base from "../layouts/Base.astro";
       </button>
     </header>
 
+    <section class="track-banner" id="track-banner" hidden>
+      <div class="track-banner-head">
+        <span>追踪 <b id="track-line"></b> · <span id="track-station"></span></span>
+        <button class="track-end" id="track-end" type="button">结束</button>
+      </div>
+      <div class="track-big" id="track-big"></div>
+      <div class="track-sub" id="track-sub"></div>
+    </section>
+
+    <div class="search">
+      <span class="search-ico">🔍</span>
+      <input id="search" type="search" placeholder="搜线路、车站" autocomplete="off" />
+    </div>
+
+    <section class="watch" id="watch">
+      <div class="watch-head">
+        <span>我的盯梢 <span class="watch-note" id="watch-note"></span></span>
+        <button class="map-toggle" id="watch-map-toggle" type="button" style="margin:0">🗺 地图</button>
+      </div>
+      <div class="map-box" id="watch-map" hidden></div>
+      <p class="map-err" id="watch-map-err" hidden></p>
+      <div class="watch-grid" id="watch-grid">
+        <div class="skeleton"></div>
+        <div class="skeleton"></div>
+      </div>
+    </section>
+
     <section class="favs" id="favs" hidden>
-      <div class="favs-title">收藏</div>
+      <div class="sec-title"><span>收藏</span></div>
       <div class="favs-row" id="favs-row"></div>
     </section>
+
+    <div class="sec-title"><span>附近</span></div>
 
     <div class="list" id="list">
       <div class="skeleton"></div>
@@ -29,13 +58,18 @@ import Base from "../layouts/Base.astro";
 
     <p class="foot">
       数据来自车来了 H5 接口 · 每 30 秒自动刷新<br />
-      点站点名看该站全部线路，点线路看沿途站点 · 收藏只存在本机
+      点站点名看该站全部线路，点线路看沿途站点 · 收藏与追踪只存在本机
     </p>
   </main>
 
   <script>
     import { esc, hhmm, fmtDist, lineRow, stationHref, getJSON } from "../scripts/util.js";
     import { getFavs, isFavStation, toggleStation, toggleLine, onFavChange } from "../scripts/favs.js";
+    import {
+      CITY, watchGroup, watchTargets, fetchWatchLine, nearestBus, nextBus, plateTail,
+      getTrackedTrip, clearTrackedTrip,
+    } from "../scripts/watch.js";
+    import { loadAmap, createBusMap } from "../scripts/amap.js";
 
     const els = {
       list: document.getElementById("list"),
@@ -46,13 +80,29 @@ import Base from "../layouts/Base.astro";
       icon: document.getElementById("refresh-icon"),
       favs: document.getElementById("favs"),
       favsRow: document.getElementById("favs-row"),
+      search: document.getElementById("search"),
+      watchGrid: document.getElementById("watch-grid"),
+      watchNote: document.getElementById("watch-note"),
+      watchMap: document.getElementById("watch-map"),
+      watchMapToggle: document.getElementById("watch-map-toggle"),
+      watchMapErr: document.getElementById("watch-map-err"),
+      banner: document.getElementById("track-banner"),
+      trackLine: document.getElementById("track-line"),
+      trackStation: document.getElementById("track-station"),
+      trackBig: document.getElementById("track-big"),
+      trackSub: document.getElementById("track-sub"),
+      trackEnd: document.getElementById("track-end"),
     };
 
     const FALLBACK = { lat: 23.142166, lng: 113.316086, label: "体育西路（默认位置）" };
-    const CITY = "040";
 
     let state = { lat: null, lng: null, busy: false };
     let lastUpdated = 0;
+    let nearbyData = null;
+    let watchResults = [];
+    let watchMapObj = null;
+    let watchMapOpen = false;
+    let trackedTrip = getTrackedTrip();
 
     const ETA_CACHE = "cl-st-eta-v1";
 
@@ -146,7 +196,15 @@ import Base from "../layouts/Base.astro";
       }
     }
 
-    function favStationChip(s, eta) {
+    function etaRight(eta) {
+      if (typeof eta !== "number" || eta < 0) return "";
+      if (eta < 60) {
+        return `<span class="fav-min arrived">到站了</span><span class="fav-left">快去上车</span>`;
+      }
+      return `<span class="fav-min">${Math.max(1, Math.round(eta / 60))} 分钟</span>`;
+    }
+
+    function favStationRow(s, eta) {
       const q = new URLSearchParams({
         physicalStId: s.physicalStId || "",
         sId: s.sId || s.id,
@@ -155,33 +213,34 @@ import Base from "../layouts/Base.astro";
         cityId: s.cityId || CITY,
         n: s.name,
       });
-      return `<a class="chip fav-station" href="/station/?${q}">🚏 ${esc(s.name)}${chipTail(eta)}</a>`;
+      return `<a class="fav-row" href="/station/?${q}">
+        <span class="fav-pill">🚏 ${esc(s.name)}</span>
+        <span class="fav-mid"><b>${esc(s.name)}</b><i>收藏的站点 · 点进查看全部线路</i></span>
+        <span class="fav-eta">${etaRight(eta)}</span>
+      </a>`;
     }
 
-    function chipTail(eta) {
-      if (eta === undefined) return '<span class="chip-eta">…</span>';
-      if (eta >= 0) {
-        const m = Math.max(1, Math.round(eta / 60));
-        return `<span class="chip-eta${m <= 2 ? " soon" : ""}">${m} 分</span>`;
-      }
-      return "";
+    function favLineRow(l, eta) {
+      const q = new URLSearchParams({
+        lineId: String(l.id || "").split("#")[0],
+        dir: String(l.dir ?? 1),
+        cityId: l.cityId || CITY,
+        stationId: l.stationId || "",
+        st: l.st || "",
+        n: l.name,
+      });
+      const mid = l.st ? `${l.st}上车` : `开往 ${l.to || ""}`;
+      return `<a class="fav-row" href="/line/?${q}">
+        <span class="fav-pill">${esc(l.name)}</span>
+        <span class="fav-mid"><b>${esc(mid)}</b><i>开往 ${esc(l.to || "—")}</i></span>
+        <span class="fav-eta">${etaRight(eta)}</span>
+      </a>`;
     }
 
     function drawFavs(favs, etaMap) {
       const items = [
-        ...favs.stations.map((s) =>
-          favStationChip(s, etaMap ? etaMap.get(s.id) : undefined),
-        ),
-        ...favs.lines.map((l) => {
-          const q = new URLSearchParams({
-            lineId: String(l.id || "").split("#")[0],
-            dir: String(l.dir ?? 1),
-            cityId: l.cityId || CITY,
-            stationId: l.stationId || "",
-            n: l.name,
-          });
-          return `<a class="chip fav-line" href="/line/?${q}">🚌 ${esc(l.name)} → ${esc(l.to || "")}${chipTail(etaMap ? etaMap.get(`L:${l.id}`) : undefined)}</a>`;
-        }),
+        ...favs.lines.map((l) => favLineRow(l, etaMap ? etaMap.get(`L:${l.id}`) : undefined)),
+        ...favs.stations.map((s) => favStationRow(s, etaMap ? etaMap.get(s.id) : undefined)),
       ];
       els.favs.hidden = items.length === 0;
       els.favsRow.innerHTML = items.join("");
@@ -227,12 +286,35 @@ import Base from "../layouts/Base.astro";
         </section>`;
     }
 
-    function render(data) {
-      els.city.textContent = data.city || "附近站点";
-      els.status.textContent = `更新于 ${hhmm(data.updatedAt)} · 每 30 秒自动刷新`;
-      els.list.innerHTML = data.stations.map(stationCard).join("");
-      els.msg.textContent = "";
+    function renderList(stations) {
+      els.list.innerHTML = stations.map(stationCard).join("");
       bindButtons();
+    }
+
+    function render(data) {
+      nearbyData = data;
+      els.city.innerHTML = `${esc(data.city || "广州")} <span class="caret">▾</span>`;
+      els.status.textContent = `更新于 ${hhmm(data.updatedAt)} · 每 30 秒自动刷新`;
+      applySearch();
+      els.msg.textContent = "";
+    }
+
+    function applySearch() {
+      if (!nearbyData) return;
+      const q = els.search.value.trim();
+      if (!q) {
+        renderList(nearbyData.stations || []);
+        els.msg.textContent = "";
+        return;
+      }
+      const hit = (nearbyData.stations || []).filter(
+        (st) =>
+          String(st.name || "").includes(q) ||
+          (st.lines || []).some((l) => String(l.no || "").includes(q)),
+      );
+      renderList(hit);
+      els.msg.textContent = hit.length ? "" : "没有匹配的站点或线路";
+      els.msg.className = "msg";
     }
 
     function bindButtons() {
@@ -265,6 +347,7 @@ import Base from "../layouts/Base.astro";
             dir: Number(btn.dataset.lineDir || 0),
             cityId: btn.dataset.lineCity || CITY,
             stationId: btn.dataset.lineStation || "",
+            st: btn.dataset.lineStName || "",
           });
           const on = data.lines.some((l) => l.id === btn.dataset.favLine);
           btn.textContent = on ? "★" : "☆";
@@ -330,19 +413,184 @@ import Base from "../layouts/Base.astro";
       );
     }
 
+    // ── 我的盯梢 ──
+    function watchHref(target) {
+      const q = new URLSearchParams({
+        lineId: target.lineId,
+        dir: String(target.dir),
+        cityId: CITY,
+        stationId: target.stationId,
+        st: target.station,
+        n: target.no,
+      });
+      return `/line/?${q}`;
+    }
+
+    function watchCard(target, data) {
+      const bus = nearestBus(data);
+      const next = nextBus(data);
+      const order = data.line?.targetOrder || 0;
+      const left = bus && order && bus.order ? order - bus.order : 0;
+      const meta = [];
+      if (bus && left > 0) meta.push(`还有 ${left} 站`);
+      const tail = plateTail(bus?.plate);
+      if (tail) meta.push(tail);
+      if (bus && typeof bus.speed === "number" && bus.speed > 0) meta.push(`${Math.round(bus.speed)} km/h`);
+      const etaHtml = !bus
+        ? `<div class="watch-eta none">暂无车辆</div>`
+        : bus.eta < 60
+          ? `<div class="watch-eta">到站了</div>`
+          : `<div class="watch-eta">${Math.max(1, Math.round(bus.eta / 60))}<span class="eta-unit">分钟</span></div>`;
+      const nextHtml = next
+        ? `<span class="watch-next">下一辆 ${Math.max(1, Math.round(next.eta / 60))} 分钟 · ${order && next.order ? Math.max(0, order - next.order) : "?"} 站</span>`
+        : "";
+      return `<a class="watch-card" href="${watchHref(target)}">
+        <div class="watch-top">
+          <span class="station-pill">${esc(target.station)}站上车</span>
+          <span class="watch-order">${order ? `第 ${order} 站` : ""}</span>
+        </div>
+        ${etaHtml}
+        ${meta.length ? `<div class="watch-meta">${esc(meta.join(" · "))}</div>` : ""}
+        <div class="watch-div"></div>
+        <div class="watch-foot">
+          ${nextHtml}
+          <span class="watch-link">全线 ${data.buses.length} 辆车在途 · 查看</span>
+        </div>
+      </a>`;
+    }
+
+    async function loadWatch() {
+      const group = watchGroup();
+      const targets = watchTargets(group);
+      els.watchNote.textContent =
+        group === "morning" ? "早班 · 往体育中心" : group === "evening" ? "晚班 · 往棠德花苑" : "早班 + 晚班";
+      const settled = await Promise.all(
+        targets.map(async (t) => {
+          try {
+            return { target: t, data: await fetchWatchLine(getJSON, t), error: null };
+          } catch (err) {
+            return { target: t, data: null, error: err.message };
+          }
+        }),
+      );
+      watchResults = settled;
+      els.watchGrid.innerHTML = settled
+        .map(({ target, data, error }) =>
+          error
+            ? `<div class="watch-card"><div class="watch-top"><span class="station-pill">${esc(target.station)}站上车</span><span class="watch-order">${esc(target.no)}</span></div><div class="watch-err">查询失败：${esc(error)}</div></div>`
+            : watchCard(target, data),
+        )
+        .join("");
+      if (watchMapOpen) rebuildWatchMap();
+    }
+
+    async function rebuildWatchMap() {
+      if (watchMapObj) {
+        watchMapObj.destroy();
+        watchMapObj = null;
+      }
+      const routes = watchResults
+        .filter((r) => r.data)
+        .map((r) => ({ stations: r.data.stations, buses: r.data.buses, targetOrder: r.data.line?.targetOrder || 0 }));
+      if (!routes.length) return;
+      try {
+        await loadAmap();
+        watchMapObj = await createBusMap(els.watchMap, { routes });
+        els.watchMapErr.hidden = true;
+      } catch (err) {
+        els.watchMapErr.textContent = err.message || "地图加载失败";
+        els.watchMapErr.hidden = false;
+      }
+    }
+
+    els.watchMapToggle.addEventListener("click", async () => {
+      watchMapOpen = !watchMapOpen;
+      els.watchMap.hidden = !watchMapOpen;
+      els.watchMapToggle.textContent = watchMapOpen ? "收起地图" : "🗺 地图";
+      if (watchMapOpen) rebuildWatchMap();
+      else if (watchMapObj) {
+        watchMapObj.destroy();
+        watchMapObj = null;
+      }
+    });
+
+    // ── 首页追踪横幅 ──
+    function paintBanner(trip, data) {
+      els.trackLine.textContent = trip.lineNo || "";
+      els.trackStation.textContent = trip.stationName || "";
+      if (!data) {
+        els.trackBig.textContent = "查询失败";
+        els.trackBig.classList.add("arrived");
+        els.trackSub.textContent = "";
+        return;
+      }
+      const bus = nearestBus(data);
+      const order = data.line?.targetOrder || 0;
+      if (!bus) {
+        els.trackBig.textContent = "暂无车辆";
+        els.trackBig.classList.add("arrived");
+        els.trackSub.textContent = `全线 ${data.buses.length} 辆车在途`;
+        return;
+      }
+      els.trackBig.classList.remove("arrived");
+      if (bus.eta < 60) {
+        els.trackBig.textContent = "到站了";
+        els.trackBig.classList.add("arrived");
+        els.trackSub.textContent = "快去上车";
+      } else {
+        els.trackBig.innerHTML = `${Math.max(1, Math.round(bus.eta / 60))}<span class="track-unit">分钟</span>`;
+        const left = order && bus.order ? order - bus.order : 0;
+        els.trackSub.textContent = left > 0 ? `还有 ${left} 站` : "";
+      }
+    }
+
+    async function loadBanner() {
+      if (!trackedTrip) {
+        els.banner.hidden = true;
+        return;
+      }
+      els.banner.hidden = false;
+      try {
+        const q = new URLSearchParams({
+          lineId: trackedTrip.lineId,
+          dir: String(trackedTrip.dir),
+          cityId: CITY,
+          stationId: trackedTrip.stationId,
+        });
+        paintBanner(trackedTrip, await getJSON(`/api/line?${q}`));
+      } catch {
+        paintBanner(trackedTrip, null);
+      }
+    }
+
+    els.trackEnd.addEventListener("click", () => {
+      clearTrackedTrip();
+      trackedTrip = null;
+      els.banner.hidden = true;
+    });
+
     els.refresh.addEventListener("click", () => load());
+    els.search.addEventListener("input", applySearch);
     onFavChange(renderFavs);
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible") {
         renderFavs();
+        loadWatch();
+        loadBanner();
         if (Date.now() - lastUpdated > 20_000) load({ silent: true });
       }
     });
 
     renderFavs();
     locate();
+    loadWatch();
+    loadBanner();
     setInterval(() => {
-      if (document.visibilityState === "visible") load({ silent: true });
+      if (document.visibilityState === "visible") {
+        load({ silent: true });
+        loadWatch();
+        loadBanner();
+      }
     }, 30_000);
   </script>
 </Base>

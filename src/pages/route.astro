@@ -1,0 +1,223 @@
+---
+import Base from "../layouts/Base.astro";
+---
+
+<Base title="路线规划 · 车来了">
+  <main class="wrap">
+    <header class="top">
+      <div>
+        <a class="back" href="/">← 附近站点</a>
+        <div class="city">路线规划</div>
+        <div class="city-sub">高德公交算路 · 站名用快照坐标，不怕认错地方</div>
+      </div>
+    </header>
+
+    <section class="route-form">
+      <input class="route-input" id="origin" type="text" placeholder="起点，例如：上社" autocomplete="off" />
+      <input class="route-input" id="destination" type="text" placeholder="终点，例如：中山六院北院区" autocomplete="off" />
+      <div class="route-hint" id="hint" hidden></div>
+
+      <div class="seg-ctl" id="strategy">
+        <button type="button" data-strategy="0" class="sel">最快</button>
+        <button type="button" data-strategy="2">少换乘</button>
+        <button type="button" data-strategy="3">少步行</button>
+        <button type="button" data-strategy="5">不坐地铁</button>
+      </div>
+
+      <div class="chip-row" id="chips">
+        <button class="station-chip" type="button" data-name="BRT上社">BRT上社</button>
+        <button class="station-chip" type="button" data-name="天河">天河</button>
+        <button class="station-chip" type="button" data-name="体育中心">体育中心</button>
+        <button class="station-chip" type="button" data-name="中山六院北院区">中山六院北院区</button>
+      </div>
+
+      <div class="track-bar" style="position:static;margin-top:16px">
+        <button class="track-btn" id="plan-btn" type="button">规划路线</button>
+      </div>
+    </section>
+
+    <div class="map-box" id="route-map" hidden></div>
+    <p class="map-err" id="map-err" hidden></p>
+
+    <div class="plan-list" id="plan-list"></div>
+    <p class="msg" id="msg"></p>
+  </main>
+
+  <script>
+    import { esc, getJSON } from "../scripts/util.js";
+    import { normalizeStationName, KNOWN_STATIONS, wgs84ToGcj02 } from "../scripts/watch.js";
+    import { loadAmap, drawPlanOnMap } from "../scripts/amap.js";
+
+    const els = {
+      origin: document.getElementById("origin"),
+      destination: document.getElementById("destination"),
+      hint: document.getElementById("hint"),
+      strategy: document.getElementById("strategy"),
+      chips: document.getElementById("chips"),
+      planBtn: document.getElementById("plan-btn"),
+      map: document.getElementById("route-map"),
+      mapErr: document.getElementById("map-err"),
+      planList: document.getElementById("plan-list"),
+      msg: document.getElementById("msg"),
+    };
+
+    let strategy = "0";
+    let selectedPlan = -1;
+    let mapObj = null;
+    let lastFocus = "origin";
+
+    els.origin.addEventListener("focus", () => (lastFocus = "origin"));
+    els.destination.addEventListener("focus", () => (lastFocus = "destination"));
+
+    els.strategy.querySelectorAll("button").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        strategy = btn.dataset.strategy;
+        els.strategy.querySelectorAll("button").forEach((b) => b.classList.toggle("sel", b === btn));
+      });
+    });
+
+    els.chips.querySelectorAll(".station-chip").forEach((chip) => {
+      chip.addEventListener("click", () => {
+        const target = lastFocus === "destination" ? els.destination : els.origin;
+        target.value = chip.dataset.name;
+        target.focus();
+      });
+    });
+
+    /**
+     * 端点解析：归一化站名命中盯梢站 → 用 /api/line 快照里该站的真实经纬度
+     * （跳过地理编码，「上社」不会再被认成花都）；其余只传文本走地理编码。
+     */
+    async function resolveEndpoint(text) {
+      const known = KNOWN_STATIONS[normalizeStationName(text)];
+      if (!known) return { name: text, fromSnapshot: false };
+      try {
+        const q = new URLSearchParams({
+          lineId: known.lineId,
+          dir: String(known.dir),
+          cityId: "040",
+          stationId: known.stationId,
+        });
+        const data = await getJSON(`/api/line?${q}`);
+        const st = (data.stations || []).find((s) => String(s.sId) === known.stationId);
+        if (!st || typeof st.lat !== "number" || typeof st.lng !== "number") {
+          return { name: text, fromSnapshot: false };
+        }
+        const gcj = wgs84ToGcj02(st.lng, st.lat);
+        return { name: text, lng: gcj.lng, lat: gcj.lat, fromSnapshot: true };
+      } catch {
+        return { name: text, fromSnapshot: false };
+      }
+    }
+
+    function fmtMin(sec) {
+      return `${Math.max(1, Math.round(sec / 60))} 分钟`;
+    }
+
+    function planSummary(plan) {
+      const transit = plan.segments.filter((s) => s.kind !== "walk");
+      const names = transit.map((s) => s.title).join(" → ");
+      const parts = [];
+      if (names) parts.push(names);
+      if (plan.walkingM > 0) parts.push(`步行 ${plan.walkingM} 米`);
+      return parts.join(" · ");
+    }
+
+    function renderPlans(data) {
+      const notes = [];
+      if (data.originFromSnapshot) notes.push("起点用了快照坐标");
+      if (data.destFromSnapshot) notes.push("终点用了快照坐标");
+      els.hint.hidden = !notes.length;
+      if (notes.length) els.hint.innerHTML = `已按 <b>${esc(notes.join("、"))}</b> 算路`;
+      els.msg.textContent = "";
+
+      selectedPlan = 0;
+      els.planList.innerHTML = data.plans
+        .map(
+          (p, i) => `
+          <div class="plan-row${i === 0 ? " sel" : ""}" data-idx="${i}">
+            <div class="plan-main">
+              <span class="plan-time">${fmtMin(p.durationSec)}</span>
+              <span class="plan-cost">¥${p.costYuan} · ${(p.distanceM / 1000).toFixed(1)}km</span>
+            </div>
+            <div class="plan-sub">${esc(planSummary(p))}</div>
+            <div class="plan-detail" ${i === 0 ? "" : "hidden"}>
+              ${p.segments
+                .map(
+                  (s) => `<div class="seg-row"><span class="seg-kind ${s.kind}">${s.kind === "walk" ? "步行" : s.kind === "rail" ? "地铁" : "公交"}</span><span>${esc(s.detail || s.title)}</span></div>`,
+                )
+                .join("")}
+            </div>
+          </div>`,
+        )
+        .join("");
+      els.planList.querySelectorAll(".plan-row").forEach((row) => {
+        row.addEventListener("click", () => selectPlan(Number(row.dataset.idx)));
+      });
+      selectPlan(0);
+    }
+
+    async function selectPlan(i) {
+      selectedPlan = i;
+      els.planList.querySelectorAll(".plan-row").forEach((row) => {
+        const on = Number(row.dataset.idx) === i;
+        row.classList.toggle("sel", on);
+        row.querySelector(".plan-detail").hidden = !on;
+      });
+      const plan = window.__plans?.[i];
+      if (!plan) return;
+      els.map.hidden = false;
+      if (mapObj) {
+        mapObj.destroy();
+        mapObj = null;
+      }
+      try {
+        await loadAmap();
+        mapObj = await drawPlanOnMap(els.map, plan);
+        els.mapErr.hidden = true;
+      } catch (err) {
+        els.mapErr.textContent = err.message || "地图加载失败";
+        els.mapErr.hidden = false;
+      }
+    }
+
+    els.planBtn.addEventListener("click", async () => {
+      const oText = els.origin.value.trim();
+      const dText = els.destination.value.trim();
+      if (!oText || !dText) {
+        els.msg.textContent = "先填起点和终点";
+        els.msg.className = "msg err";
+        return;
+      }
+      els.planBtn.disabled = true;
+      els.planBtn.textContent = "规划中…";
+      els.msg.textContent = "";
+      els.msg.className = "msg";
+      try {
+        const [o, d] = await Promise.all([resolveEndpoint(oText), resolveEndpoint(dText)]);
+        const q = new URLSearchParams({
+          origin: o.name,
+          destination: d.name,
+          strategy,
+        });
+        if (o.fromSnapshot) {
+          q.set("originLng", String(o.lng));
+          q.set("originLat", String(o.lat));
+        }
+        if (d.fromSnapshot) {
+          q.set("destLng", String(d.lng));
+          q.set("destLat", String(d.lat));
+        }
+        const data = await getJSON(`/api/route?${q}`);
+        window.__plans = data.plans;
+        renderPlans(data);
+      } catch (err) {
+        els.msg.textContent = err.message || "规划失败";
+        els.msg.className = "msg err";
+      } finally {
+        els.planBtn.disabled = false;
+        els.planBtn.textContent = "规划路线";
+      }
+    });
+  </script>
+</Base>

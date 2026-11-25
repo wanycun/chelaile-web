@@ -72,7 +72,7 @@ export function lineRow(line, { station, cityId = "040", favId = "", favOn = fal
   const tag = line.tags?.length ? `<span class="tag">${esc(line.tags[0])}</span>` : "";
   const href = line.lineId ? lineHref(line, station, cityId) : "#";
   const favAttrs = favId
-    ? `data-fav-line="${esc(favId)}" data-line-name="${esc(line.no)}" data-line-to="${esc(line.to)}" data-line-dir="${line.dir}" data-line-city="${esc(cityId)}" data-line-station="${esc(station?.sId || "")}"`
+    ? `data-fav-line="${esc(favId)}" data-line-name="${esc(line.no)}" data-line-to="${esc(line.to)}" data-line-dir="${line.dir}" data-line-city="${esc(cityId)}" data-line-station="${esc(station?.sId || "")}" data-line-st-name="${esc(station?.name || "")}"`
     : "";
 
   return `

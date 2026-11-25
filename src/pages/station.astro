@@ -87,6 +87,7 @@ const cityId = params.get("cityId") || "040";
             dir: Number(btn.dataset.lineDir || 0),
             cityId: btn.dataset.lineCity || cityId,
             stationId: btn.dataset.lineStation || "",
+            st: btn.dataset.lineStName || "",
           });
           const now = on.lines.some((l) => l.id === btn.dataset.favLine);
           btn.textContent = now ? "★" : "☆";
